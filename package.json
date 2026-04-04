@@ -1,6 +1,6 @@
 {
   "name": "sowel-plugin-zigbee2mqtt",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "Sowel plugin: Zigbee2MQTT devices",
   "type": "module",
   "main": "dist/index.js",

@@ -1,17 +1,46 @@
 {
   "id": "zigbee2mqtt",
+  "type": "integration",
   "name": "Zigbee2MQTT",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "Zigbee devices via Zigbee2MQTT MQTT bridge",
   "icon": "Radio",
   "repo": "mchacher/sowel-plugin-zigbee2mqtt",
   "author": "mchacher",
   "sowelVersion": ">=0.10.0",
   "settings": [
-    { "key": "mqtt_url", "label": "MQTT Broker URL", "type": "text", "required": true, "placeholder": "mqtt://localhost:1883" },
-    { "key": "mqtt_username", "label": "MQTT Username", "type": "text", "required": false },
-    { "key": "mqtt_password", "label": "MQTT Password", "type": "password", "required": false },
-    { "key": "mqtt_client_id", "label": "MQTT Client ID", "type": "text", "required": false, "defaultValue": "sowel-z2m" },
-    { "key": "base_topic", "label": "Zigbee2MQTT Base Topic", "type": "text", "required": false, "defaultValue": "zigbee2mqtt" }
+    {
+      "key": "mqtt_url",
+      "label": "MQTT Broker URL",
+      "type": "text",
+      "required": true,
+      "placeholder": "mqtt://localhost:1883"
+    },
+    {
+      "key": "mqtt_username",
+      "label": "MQTT Username",
+      "type": "text",
+      "required": false
+    },
+    {
+      "key": "mqtt_password",
+      "label": "MQTT Password",
+      "type": "password",
+      "required": false
+    },
+    {
+      "key": "mqtt_client_id",
+      "label": "MQTT Client ID",
+      "type": "text",
+      "required": false,
+      "defaultValue": "sowel-z2m"
+    },
+    {
+      "key": "base_topic",
+      "label": "Zigbee2MQTT Base Topic",
+      "type": "text",
+      "required": false,
+      "defaultValue": "zigbee2mqtt"
+    }
   ]
 }
