@@ -138,8 +138,21 @@ class Zigbee2MqttPlugin implements IntegrationPlugin {
     const topic = dispatchConfig.topic as string;
     const payloadKey = dispatchConfig.payloadKey as string;
     if (!topic || !payloadKey) throw new Error("Missing topic or payloadKey");
-    const payload: Record<string, unknown> = {};
-    payload[payloadKey] = value;
+
+    // Composite payload support: when `value` is a plain object, publish it
+    // directly as the MQTT payload instead of wrapping under `payloadKey`.
+    // This enables atomic multi-key publishes like {"state":"ON","on_time":300}
+    // (z2m's "on with timed off" pattern), which would otherwise need two
+    // separate publishes that z2m may interleave or rate-limit.
+    const isCompositeValue =
+      value !== null &&
+      typeof value === "object" &&
+      !Array.isArray(value);
+
+    const payload: Record<string, unknown> = isCompositeValue
+      ? (value as Record<string, unknown>)
+      : { [payloadKey]: value };
+
     this.mqttConnector.publish(topic, JSON.stringify(payload));
   }
 
