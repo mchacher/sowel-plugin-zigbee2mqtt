@@ -242,7 +242,7 @@ export class Zigbee2MqttParser {
       if (access & Z2M_ACCESS_SET) {
         orders.push({
           key: expose.property, type: dataType,
-          dispatchConfig: { topic: `${this.baseTopic}/${deviceName}/set`, payloadKey: expose.property },
+          dispatchConfig: { topicSuffix: `${deviceName}/set`, payloadKey: expose.property },
           min: expose.value_min, max: expose.value_max, enumValues: expose.values, unit: expose.unit,
         });
       }
