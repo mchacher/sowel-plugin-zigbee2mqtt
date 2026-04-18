@@ -123,7 +123,7 @@ function collectProperties(exposes: Z2MExpose[]): Set<string> {
 interface DiscoveredDevice {
   ieeeAddress?: string; friendlyName: string; manufacturer?: string; model?: string;
   rawExpose?: unknown;
-  data: { key: string; type: string; category: string; unit?: string }[];
+  data: { key: string; type: string; category: string; unit?: string; enumValues?: string[] }[];
   orders: { key: string; type: string; category?: string; min?: number; max?: number; enumValues?: string[]; unit?: string }[];
 }
 
@@ -256,7 +256,7 @@ export class Zigbee2MqttParser {
 
       if (access & Z2M_ACCESS_STATE) {
         const category = inferCategory(expose.property, allProperties, parentExposeType);
-        data.push({ key: expose.property, type: dataType, category, unit: expose.unit });
+        data.push({ key: expose.property, type: dataType, category, unit: expose.unit, enumValues: expose.values });
       }
 
       if (access & Z2M_ACCESS_SET) {
