@@ -72,6 +72,15 @@ const PROPERTY_TO_CATEGORY: Record<string, DataCategory> = {
   rain: "rain", wind: "wind", noise: "noise",
 };
 
+const PROPERTY_TO_ORDER_CATEGORY: Record<string, string> = {
+  brightness: "set_brightness",
+  color_temp: "set_color_temp",
+  color: "set_color",
+  color_xy: "set_color",
+  color_hs: "set_color",
+  position: "set_shutter_position",
+};
+
 const LIGHT_INDICATOR_PROPERTIES = new Set(["brightness", "color_temp", "color", "color_xy", "color_hs"]);
 
 // ============================================================
@@ -85,6 +94,17 @@ function inferCategory(property: string, allProperties: Set<string>, parentExpos
     return hasLightProperties ? "light_state" : "generic";
   }
   return PROPERTY_TO_CATEGORY[property] ?? "generic";
+}
+
+function inferOrderCategory(property: string, allProperties: Set<string>, parentExposeType?: string): string | undefined {
+  if (property === "state") {
+    if (parentExposeType === "cover") return "shutter_move";
+    if (parentExposeType === "light" || parentExposeType === "switch") return "light_toggle";
+    const hasLightProperties = [...LIGHT_INDICATOR_PROPERTIES].some((p) => allProperties.has(p));
+    if (hasLightProperties) return "light_toggle";
+    return undefined;
+  }
+  return PROPERTY_TO_ORDER_CATEGORY[property];
 }
 
 function collectProperties(exposes: Z2MExpose[]): Set<string> {
@@ -104,7 +124,7 @@ interface DiscoveredDevice {
   ieeeAddress?: string; friendlyName: string; manufacturer?: string; model?: string;
   rawExpose?: unknown;
   data: { key: string; type: string; category: string; unit?: string }[];
-  orders: { key: string; type: string; min?: number; max?: number; enumValues?: string[]; unit?: string }[];
+  orders: { key: string; type: string; category?: string; min?: number; max?: number; enumValues?: string[]; unit?: string }[];
 }
 
 interface DeviceManager {
@@ -240,8 +260,9 @@ export class Zigbee2MqttParser {
       }
 
       if (access & Z2M_ACCESS_SET) {
+        const orderCat = inferOrderCategory(expose.property, allProperties, parentExposeType);
         orders.push({
-          key: expose.property, type: dataType,
+          key: expose.property, type: dataType, category: orderCat,
           min: expose.value_min, max: expose.value_max, enumValues: expose.values, unit: expose.unit,
         });
       }

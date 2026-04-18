@@ -2,12 +2,12 @@
   "id": "zigbee2mqtt",
   "type": "integration",
   "name": "Zigbee2MQTT",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Zigbee devices via Zigbee2MQTT MQTT bridge",
   "icon": "Radio",
   "repo": "mchacher/sowel-plugin-zigbee2mqtt",
   "author": "mchacher",
-  "sowelVersion": ">=0.10.0",
+  "sowelVersion": ">=1.2.12",
   "settings": [
     {
       "key": "mqtt_url",
