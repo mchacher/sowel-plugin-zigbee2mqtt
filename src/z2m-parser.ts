@@ -104,7 +104,7 @@ interface DiscoveredDevice {
   ieeeAddress?: string; friendlyName: string; manufacturer?: string; model?: string;
   rawExpose?: unknown;
   data: { key: string; type: string; category: string; unit?: string }[];
-  orders: { key: string; type: string; dispatchConfig: Record<string, unknown>; min?: number; max?: number; enumValues?: string[]; unit?: string }[];
+  orders: { key: string; type: string; min?: number; max?: number; enumValues?: string[]; unit?: string }[];
 }
 
 interface DeviceManager {
@@ -242,7 +242,6 @@ export class Zigbee2MqttParser {
       if (access & Z2M_ACCESS_SET) {
         orders.push({
           key: expose.property, type: dataType,
-          dispatchConfig: { topicSuffix: `${deviceName}/set`, payloadKey: expose.property },
           min: expose.value_min, max: expose.value_max, enumValues: expose.values, unit: expose.unit,
         });
       }

@@ -41,9 +41,10 @@ interface IntegrationSettingDef { key: string; label: string; type: "text" | "pa
 
 interface IntegrationPlugin {
   readonly id: string; readonly name: string; readonly description: string; readonly icon: string;
+  readonly apiVersion?: number;
   getStatus(): IntegrationStatus; isConfigured(): boolean; getSettingsSchema(): IntegrationSettingDef[];
   start(options?: { pollOffset?: number }): Promise<void>; stop(): Promise<void>;
-  executeOrder(device: Device, dispatchConfig: Record<string, unknown>, value: unknown): Promise<void>;
+  executeOrder(device: Device, orderKeyOrDispatchConfig: string | Record<string, unknown>, value: unknown): Promise<void>;
   refresh?(): Promise<void>; getPollingInfo?(): { lastPollAt: string; intervalMs: number } | null;
 }
 
@@ -59,6 +60,7 @@ class Zigbee2MqttPlugin implements IntegrationPlugin {
   readonly name = "Zigbee2MQTT";
   readonly description = "Zigbee devices via MQTT bridge";
   readonly icon = "Radio";
+  readonly apiVersion = 2;
 
   private logger: Logger;
   private eventBus: EventBus;
@@ -133,20 +135,13 @@ class Zigbee2MqttPlugin implements IntegrationPlugin {
     }
   }
 
-  async executeOrder(_device: Device, dispatchConfig: Record<string, unknown>, value: unknown): Promise<void> {
+  async executeOrder(device: Device, orderKey: string, value: unknown): Promise<void> {
     if (!this.mqttConnector?.isConnected()) throw new Error("MQTT not connected");
     const baseTopic = this.getSetting("base_topic") ?? "zigbee2mqtt";
-    const topic = dispatchConfig.topicSuffix
-      ? `${baseTopic}/${dispatchConfig.topicSuffix}`
-      : dispatchConfig.topic as string;
-    const payloadKey = dispatchConfig.payloadKey as string;
-    if (!topic || !payloadKey) throw new Error("Missing topic or payloadKey");
+    const topic = `${baseTopic}/${device.sourceDeviceId}/set`;
 
     // Composite payload support: when `value` is a plain object, publish it
-    // directly as the MQTT payload instead of wrapping under `payloadKey`.
-    // This enables atomic multi-key publishes like {"state":"ON","on_time":300}
-    // (z2m's "on with timed off" pattern), which would otherwise need two
-    // separate publishes that z2m may interleave or rate-limit.
+    // directly as the MQTT payload instead of wrapping under `orderKey`.
     const isCompositeValue =
       value !== null &&
       typeof value === "object" &&
@@ -154,7 +149,7 @@ class Zigbee2MqttPlugin implements IntegrationPlugin {
 
     const payload: Record<string, unknown> = isCompositeValue
       ? (value as Record<string, unknown>)
-      : { [payloadKey]: value };
+      : { [orderKey]: value };
 
     this.mqttConnector.publish(topic, JSON.stringify(payload));
   }
