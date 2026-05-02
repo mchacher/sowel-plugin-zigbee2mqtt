@@ -100,7 +100,10 @@ class Zigbee2MqttPlugin implements IntegrationPlugin {
     const mqttUrl = this.getSetting("mqtt_url")!;
     const mqttUsername = this.getSetting("mqtt_username") || undefined;
     const mqttPassword = this.getSetting("mqtt_password") || undefined;
-    const mqttClientId = this.getSetting("mqtt_client_id") ?? "sowel-z2m";
+    // Append a random suffix so a stale broker session or a previous Sowel
+    // process holding the same clientId can't kick this one in a loop.
+    const baseClientId = this.getSetting("mqtt_client_id") ?? "sowel-z2m";
+    const mqttClientId = `${baseClientId}-${Math.random().toString(36).slice(2, 8)}`;
     const baseTopic = this.getSetting("base_topic") ?? "zigbee2mqtt";
 
     try {
