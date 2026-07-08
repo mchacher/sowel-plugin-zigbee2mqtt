@@ -65,7 +65,10 @@ const PROPERTY_TO_CATEGORY: Record<string, DataCategory> = {
   power: "power", energy: "energy",
   co2: "co2", voc: "voc",
   action: "action",
-  contact: "contact",
+  // Core recognises door/window openings via "contact_door" / "contact_window"
+  // (drives gate open/closed state + the zone openDoors/openWindows counts).
+  // Default to door; can be re-categorised to contact_window per device.
+  contact: "contact_door",
   state: "light_state",
   brightness: "light_brightness", color_temp: "light_brightness",
   position: "shutter_position",
@@ -87,7 +90,7 @@ const LIGHT_INDICATOR_PROPERTIES = new Set(["brightness", "color_temp", "color",
 // Category inference
 // ============================================================
 
-function inferCategory(property: string, allProperties: Set<string>, parentExposeType?: string): DataCategory {
+export function inferCategory(property: string, allProperties: Set<string>, parentExposeType?: string): DataCategory {
   if (property === "state") {
     if (parentExposeType === "light" || parentExposeType === "switch") return "light_state";
     const hasLightProperties = [...LIGHT_INDICATOR_PROPERTIES].some((p) => allProperties.has(p));
