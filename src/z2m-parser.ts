@@ -60,6 +60,23 @@ function wirePrimitive(v: unknown): string | number | boolean | undefined {
   return typeof v === "string" || typeof v === "number" || typeof v === "boolean" ? v : undefined;
 }
 
+/**
+ * Whether Z2M's availability feature is enabled, across config shapes:
+ * Z2M 2.x: `config.availability.enabled` (boolean). Z2M 1.x legacy:
+ * `config.availability` as a boolean, or an object without `enabled`
+ * (object form meant enabled). Absent config → disabled.
+ */
+export function availabilityEnabledFromBridgeInfo(info: unknown): boolean {
+  if (typeof info !== "object" || info === null) return false;
+  const avail = (info as { config?: { availability?: unknown } }).config?.availability;
+  if (typeof avail === "boolean") return avail;
+  if (typeof avail === "object" && avail !== null) {
+    const enabled = (avail as { enabled?: unknown }).enabled;
+    return typeof enabled === "boolean" ? enabled : true;
+  }
+  return false;
+}
+
 const PROPERTY_TO_CATEGORY: Record<string, DataCategory> = {
   occupancy: "motion", presence: "motion",
   temperature: "temperature", device_temperature: "temperature", soil_temperature: "temperature",
@@ -188,6 +205,7 @@ interface Logger {
   child(bindings: Record<string, unknown>): Logger;
   info(obj: Record<string, unknown>, msg: string): void;
   error(obj: Record<string, unknown>, msg: string): void;
+  debug(obj: Record<string, unknown>, msg: string): void;
 }
 
 // ============================================================
@@ -201,6 +219,9 @@ export class Zigbee2MqttParser {
   private baseTopic: string;
   /** Devices needing a bespoke multi-channel mapping (see pj1203a.ts). */
   private pj1203a: Pj1203aHandler;
+  /** null until bridge/info is seen; availability messages are queued meanwhile. */
+  private availabilityEnabled: boolean | null = null;
+  private pendingAvailability: { deviceName: string; status: "online" | "offline" }[] = [];
 
   constructor(baseTopic: string, mqttConnector: MqttConnector, deviceManager: DeviceManager, logger: Logger) {
     this.baseTopic = baseTopic;
@@ -211,11 +232,38 @@ export class Zigbee2MqttParser {
   }
 
   start(): void {
+    this.mqttConnector.subscribe(`${this.baseTopic}/bridge/info`, (_topic, payload) => { this.handleBridgeInfo(payload); });
     this.mqttConnector.subscribe(`${this.baseTopic}/bridge/devices`, (_topic, payload) => { this.handleBridgeDevices(payload); });
     this.mqttConnector.subscribe(`${this.baseTopic}/bridge/event`, (_topic, payload) => { this.handleBridgeEvent(payload); });
     this.mqttConnector.subscribe(`${this.baseTopic}/+`, (topic, payload) => { this.handleDeviceState(topic, payload); });
     this.mqttConnector.subscribe(`${this.baseTopic}/+/availability`, (topic, payload) => { this.handleDeviceAvailability(topic, payload); });
     this.logger.info({ baseTopic: this.baseTopic }, "Zigbee2MQTT parser started");
+  }
+
+  /**
+   * Track whether Z2M's availability feature is enabled (bridge/info, retained).
+   *
+   * When the feature is disabled, `<device>/availability` topics can only be
+   * stale retained leftovers from a time it was enabled — Z2M neither updates
+   * nor clears them on disable — and honoring them falsely marks working
+   * devices offline at every (re)subscribe. Availability messages that arrive
+   * before bridge/info are queued and replayed once the flag is known.
+   */
+  private handleBridgeInfo(payload: Buffer): void {
+    try {
+      const info = JSON.parse(payload.toString());
+      const enabled = availabilityEnabledFromBridgeInfo(info);
+      const previous = this.availabilityEnabled;
+      this.availabilityEnabled = enabled;
+      if (previous === null || previous !== enabled) {
+        this.logger.info({ enabled }, enabled
+          ? "Z2M availability feature enabled — availability topics honored"
+          : "Z2M availability feature disabled — availability topics ignored (stale retained)");
+      }
+      const pending = this.pendingAvailability;
+      this.pendingAvailability = [];
+      if (enabled) for (const p of pending) this.applyAvailability(p.deviceName, p.status);
+    } catch (err) { this.logger.error({ err } as Record<string, unknown>, "Failed to parse bridge/info"); }
   }
 
   private handleBridgeDevices(payload: Buffer): void {
@@ -284,13 +332,26 @@ export class Zigbee2MqttParser {
       try { const parsed = JSON.parse(raw); status = typeof parsed === "object" && parsed !== null ? parsed.state : raw; }
       catch { status = raw; }
       if (status === "online" || status === "offline") {
-        if (this.pj1203a.isKnown(deviceName)) {
-          this.pj1203a.handleAvailability(deviceName, status);
+        if (this.availabilityEnabled === null) {
+          // bridge/info not seen yet — queue instead of trusting blindly.
+          if (this.pendingAvailability.length < 512) this.pendingAvailability.push({ deviceName, status });
           return;
         }
-        this.deviceManager.updateDeviceStatus(this.baseTopic, deviceName, status);
+        if (!this.availabilityEnabled) {
+          this.logger.debug({ deviceName, status } as Record<string, unknown>, "Availability ignored (feature disabled in Z2M)");
+          return;
+        }
+        this.applyAvailability(deviceName, status);
       }
     } catch (err) { this.logger.error({ err, topic } as Record<string, unknown>, "Failed to parse availability"); }
+  }
+
+  private applyAvailability(deviceName: string, status: "online" | "offline"): void {
+    if (this.pj1203a.isKnown(deviceName)) {
+      this.pj1203a.handleAvailability(deviceName, status);
+      return;
+    }
+    this.deviceManager.updateDeviceStatus(this.baseTopic, deviceName, status);
   }
 
   private parseZ2MDevice(z2mDevice: Z2MDevice): DiscoveredDevice | null {

@@ -143,3 +143,101 @@ describe("discovery order wire values (issue #4)", () => {
     expect(order.valueOff).toBeUndefined();
   });
 });
+
+// ============================================================
+// Availability gating on bridge/info (stale retained topics)
+// ============================================================
+
+import { availabilityEnabledFromBridgeInfo } from "./z2m-parser.js";
+
+function makeParser() {
+  const handlers = new Map<string, (topic: string, payload: Buffer) => void>();
+  const statusUpdates: { name: string; status: string }[] = [];
+  const mqtt = {
+    subscribe: (pattern: string, handler: (topic: string, payload: Buffer) => void) => {
+      handlers.set(pattern, handler);
+    },
+    publish: () => {},
+    isConnected: () => true,
+  };
+  const deviceManager = {
+    upsertFromDiscovery: () => {},
+    updateDeviceData: () => {},
+    updateDeviceStatus: (_id: string, name: string, status: string) => {
+      statusUpdates.push({ name, status });
+    },
+    removeStaleDevices: () => {},
+    logSummary: () => {},
+  };
+  const logger = { child: () => logger, info: () => {}, error: () => {}, debug: () => {} } as any;
+  const parser = new Zigbee2MqttParser("z2m", mqtt as any, deviceManager as any, logger);
+  parser.start();
+  const send = (topic: string, payload: unknown) =>
+    handlers.get(
+      topic === "z2m/bridge/info" ? "z2m/bridge/info"
+      : topic === "z2m/bridge/devices" ? "z2m/bridge/devices"
+      : "z2m/+/availability",
+    )!(topic, Buffer.from(JSON.stringify(payload)));
+  return { send, statusUpdates };
+}
+
+describe("availability gating on bridge/info", () => {
+  const info = (availability: unknown) => ({ version: "2.4.0", config: { availability } });
+
+  it("honors availability when the feature is enabled", () => {
+    const { send, statusUpdates } = makeParser();
+    send("z2m/bridge/info", info({ enabled: true }));
+    send("z2m/relay/availability", { state: "offline" });
+    expect(statusUpdates).toEqual([{ name: "relay", status: "offline" }]);
+  });
+
+  it("ignores stale retained availability when the feature is disabled", () => {
+    const { send, statusUpdates } = makeParser();
+    send("z2m/bridge/info", info({ enabled: false }));
+    send("z2m/relay/availability", { state: "offline" });
+    expect(statusUpdates).toEqual([]);
+  });
+
+  it("queues availability seen before bridge/info, replays if enabled", () => {
+    const { send, statusUpdates } = makeParser();
+    send("z2m/relay/availability", { state: "offline" });
+    expect(statusUpdates).toEqual([]);
+    send("z2m/bridge/info", info({ enabled: true }));
+    expect(statusUpdates).toEqual([{ name: "relay", status: "offline" }]);
+  });
+
+  it("queues availability seen before bridge/info, drops if disabled", () => {
+    const { send, statusUpdates } = makeParser();
+    send("z2m/relay/availability", { state: "offline" });
+    send("z2m/bridge/info", info({ enabled: false }));
+    expect(statusUpdates).toEqual([]);
+  });
+
+  it("follows a live enable of the feature", () => {
+    const { send, statusUpdates } = makeParser();
+    send("z2m/bridge/info", info({ enabled: false }));
+    send("z2m/relay/availability", { state: "offline" });
+    send("z2m/bridge/info", info({ enabled: true }));
+    send("z2m/relay/availability", { state: "online" });
+    expect(statusUpdates).toEqual([{ name: "relay", status: "online" }]);
+  });
+});
+
+describe("availabilityEnabledFromBridgeInfo", () => {
+  it("reads Z2M 2.x shape", () => {
+    expect(availabilityEnabledFromBridgeInfo({ config: { availability: { enabled: false, active: {} } } })).toBe(false);
+    expect(availabilityEnabledFromBridgeInfo({ config: { availability: { enabled: true } } })).toBe(true);
+  });
+
+  it("reads legacy 1.x shapes", () => {
+    expect(availabilityEnabledFromBridgeInfo({ config: { availability: true } })).toBe(true);
+    expect(availabilityEnabledFromBridgeInfo({ config: { availability: false } })).toBe(false);
+    expect(availabilityEnabledFromBridgeInfo({ config: { availability: { active: { timeout: 10 } } } })).toBe(true);
+  });
+
+  it("treats absent config as disabled", () => {
+    expect(availabilityEnabledFromBridgeInfo({ config: {} })).toBe(false);
+    expect(availabilityEnabledFromBridgeInfo({})).toBe(false);
+    expect(availabilityEnabledFromBridgeInfo(null)).toBe(false);
+  });
+});
