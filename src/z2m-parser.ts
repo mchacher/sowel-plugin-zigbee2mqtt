@@ -4,6 +4,7 @@
  */
 
 import type { MqttConnector } from "./mqtt-connector.js";
+import { Pj1203aHandler, isPj1203a } from "./pj1203a.js";
 
 // ============================================================
 // Z2M types
@@ -135,6 +136,8 @@ interface DeviceManager {
   updateDeviceData(integrationId: string, sourceDeviceId: string, payload: Record<string, unknown>): void;
   updateDeviceStatus(integrationId: string, sourceDeviceId: string, status: string): void;
   removeStaleDevices(integrationId: string, activeIds: Set<string>): void;
+  /** Available since Sowel v1.5.1 — used by the PJ-1203A handler for baselines. */
+  getDeviceDataValue?(integrationId: string, sourceDeviceId: string, key: string): string | number | boolean | null;
   logSummary(): void;
 }
 
@@ -153,12 +156,15 @@ export class Zigbee2MqttParser {
   private mqttConnector: MqttConnector;
   private deviceManager: DeviceManager;
   private baseTopic: string;
+  /** Devices needing a bespoke multi-channel mapping (see pj1203a.ts). */
+  private pj1203a: Pj1203aHandler;
 
   constructor(baseTopic: string, mqttConnector: MqttConnector, deviceManager: DeviceManager, logger: Logger) {
     this.baseTopic = baseTopic;
     this.mqttConnector = mqttConnector;
     this.deviceManager = deviceManager;
     this.logger = logger.child({ module: "z2m-parser" });
+    this.pj1203a = new Pj1203aHandler(baseTopic, deviceManager, this.logger);
   }
 
   start(): void {
@@ -174,13 +180,26 @@ export class Zigbee2MqttParser {
       const devices: Z2MDevice[] = JSON.parse(payload.toString());
       this.logger.info({ count: devices.length }, "Received bridge/devices");
       const currentNames = new Set<string>();
+      const pj1203aNames = new Set<string>();
       for (const z2mDevice of devices) {
         if (z2mDevice.type === "Coordinator") continue;
         if (!z2mDevice.supported || z2mDevice.disabled) continue;
+
+        // Multi-channel energy meter: registered as one Sowel device per channel
+        // instead of a single flattened one. Its friendly_name is deliberately
+        // absent from currentNames so a monolithic device left over from an
+        // older plugin version is garbage-collected below.
+        if (isPj1203a(z2mDevice.definition?.model, z2mDevice.model_id)) {
+          pj1203aNames.add(z2mDevice.friendly_name);
+          for (const sid of this.pj1203a.discover(z2mDevice)) currentNames.add(sid);
+          continue;
+        }
+
         currentNames.add(z2mDevice.friendly_name);
         const parsed = this.parseZ2MDevice(z2mDevice);
         if (parsed) this.deviceManager.upsertFromDiscovery(this.baseTopic, "zigbee2mqtt", parsed);
       }
+      this.pj1203a.retainOnly(pj1203aNames);
       this.deviceManager.removeStaleDevices(this.baseTopic, currentNames);
       this.deviceManager.logSummary();
     } catch (err) { this.logger.error({ err } as Record<string, unknown>, "Failed to parse bridge/devices"); }
@@ -203,6 +222,10 @@ export class Zigbee2MqttParser {
     try {
       const data = JSON.parse(payload.toString());
       if (typeof data !== "object" || data === null) return;
+      if (this.pj1203a.isKnown(rest)) {
+        this.pj1203a.handleState(rest, data as Record<string, unknown>);
+        return;
+      }
       this.deviceManager.updateDeviceData(this.baseTopic, rest, data as Record<string, unknown>);
     } catch { /* non-JSON ignored */ }
   }
@@ -218,6 +241,10 @@ export class Zigbee2MqttParser {
       try { const parsed = JSON.parse(raw); status = typeof parsed === "object" && parsed !== null ? parsed.state : raw; }
       catch { status = raw; }
       if (status === "online" || status === "offline") {
+        if (this.pj1203a.isKnown(deviceName)) {
+          this.pj1203a.handleAvailability(deviceName, status);
+          return;
+        }
         this.deviceManager.updateDeviceStatus(this.baseTopic, deviceName, status);
       }
     } catch (err) { this.logger.error({ err, topic } as Record<string, unknown>, "Failed to parse availability"); }
