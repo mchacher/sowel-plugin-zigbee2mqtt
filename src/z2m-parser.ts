@@ -90,23 +90,57 @@ const LIGHT_INDICATOR_PROPERTIES = new Set(["brightness", "color_temp", "color",
 // Category inference
 // ============================================================
 
-export function inferCategory(property: string, allProperties: Set<string>, parentExposeType?: string): DataCategory {
+/**
+ * A relay / switch on-off channel: `state`, or an endpoint-suffixed
+ * `state_l1` / `state_left` / `state_right`, exposed as a `binary` (ON/OFF).
+ *
+ * The plain-`state`-under-a-`switch`-grouping check alone misses Tuya relay
+ * modules (e.g. WHD02) that expose the switch at the top level or per-endpoint
+ * — those land as category `generic` with no `light_toggle` order, so they
+ * cannot be bound to a light or switch equipment. Gating on `binary` keeps an
+ * enum `state` (cover OPEN/CLOSE/STOP, appliance run/pause) out.
+ */
+const RELAY_STATE_PROPERTY = /^state(_.+)?$/;
+function isRelayState(property: string, exposeType?: string): boolean {
+  return exposeType === "binary" && RELAY_STATE_PROPERTY.test(property);
+}
+
+export function inferCategory(
+  property: string,
+  allProperties: Set<string>,
+  parentExposeType?: string,
+  exposeType?: string,
+): DataCategory {
   if (property === "state") {
     if (parentExposeType === "light" || parentExposeType === "switch") return "light_state";
     const hasLightProperties = [...LIGHT_INDICATOR_PROPERTIES].some((p) => allProperties.has(p));
-    return hasLightProperties ? "light_state" : "generic";
+    if (hasLightProperties) return "light_state";
+    // A top-level binary `state` (no switch grouping) is a relay/switch.
+    if (exposeType === "binary") return "light_state";
+    return "generic";
   }
+  // Endpoint-suffixed relay channel (state_l1, state_left, ...).
+  if (isRelayState(property, exposeType)) return "light_state";
   return PROPERTY_TO_CATEGORY[property] ?? "generic";
 }
 
-function inferOrderCategory(property: string, allProperties: Set<string>, parentExposeType?: string): string | undefined {
+export function inferOrderCategory(
+  property: string,
+  allProperties: Set<string>,
+  parentExposeType?: string,
+  exposeType?: string,
+): string | undefined {
   if (property === "state") {
     if (parentExposeType === "cover") return "shutter_move";
     if (parentExposeType === "light" || parentExposeType === "switch") return "light_toggle";
     const hasLightProperties = [...LIGHT_INDICATOR_PROPERTIES].some((p) => allProperties.has(p));
     if (hasLightProperties) return "light_toggle";
+    // A top-level binary `state` (no switch grouping) is a relay on-off command.
+    if (exposeType === "binary") return "light_toggle";
     return undefined;
   }
+  // Endpoint-suffixed relay command (state_l1, state_left, ...).
+  if (isRelayState(property, exposeType)) return "light_toggle";
   return PROPERTY_TO_ORDER_CATEGORY[property];
 }
 
@@ -258,12 +292,12 @@ export class Zigbee2MqttParser {
       const dataType = Z2M_TYPE_TO_DATA_TYPE[expose.type] ?? "text";
 
       if (access & Z2M_ACCESS_STATE) {
-        const category = inferCategory(expose.property, allProperties, parentExposeType);
+        const category = inferCategory(expose.property, allProperties, parentExposeType, expose.type);
         data.push({ key: expose.property, type: dataType, category, unit: expose.unit, enumValues: expose.values });
       }
 
       if (access & Z2M_ACCESS_SET) {
-        const orderCat = inferOrderCategory(expose.property, allProperties, parentExposeType);
+        const orderCat = inferOrderCategory(expose.property, allProperties, parentExposeType, expose.type);
         orders.push({
           key: expose.property, type: dataType, category: orderCat,
           min: expose.value_min, max: expose.value_max, enumValues: expose.values, unit: expose.unit,
