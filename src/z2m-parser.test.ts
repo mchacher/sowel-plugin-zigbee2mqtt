@@ -65,3 +65,81 @@ describe("inferOrderCategory", () => {
     expect(inferOrderCategory("state", new Set(["state"]), undefined, "enum")).toBeUndefined();
   });
 });
+
+// ============================================================
+// Discovery: binary wire values on orders (issue #4)
+// ============================================================
+
+import { Zigbee2MqttParser } from "./z2m-parser.js";
+
+function runDiscovery(z2mDevices: unknown[]): any[] {
+  const handlers = new Map<string, (topic: string, payload: Buffer) => void>();
+  const mqtt = {
+    subscribe: (pattern: string, handler: (topic: string, payload: Buffer) => void) => {
+      handlers.set(pattern, handler);
+    },
+    publish: () => {},
+    isConnected: () => true,
+  };
+  const discovered: any[] = [];
+  const deviceManager = {
+    upsertFromDiscovery: (_id: string, _src: string, d: unknown) => discovered.push(d),
+    updateDeviceData: () => {},
+    updateDeviceStatus: () => {},
+    removeStaleDevices: () => {},
+    logSummary: () => {},
+  };
+  const logger = {
+    child: () => logger,
+    info: () => {},
+    error: () => {},
+  } as any;
+  const parser = new Zigbee2MqttParser("z2m", mqtt as any, deviceManager as any, logger);
+  parser.start();
+  handlers.get("z2m/bridge/devices")!("z2m/bridge/devices", Buffer.from(JSON.stringify(z2mDevices)));
+  return discovered;
+}
+
+describe("discovery order wire values (issue #4)", () => {
+  const device = (exposes: unknown[]) => ({
+    ieee_address: "0xabc",
+    friendly_name: "relay",
+    type: "Router",
+    supported: true,
+    disabled: false,
+    definition: { model: "WHD02", vendor: "Tuya", exposes },
+  });
+
+  it("propagates value_on/value_off from a binary expose onto the order", () => {
+    const [d] = runDiscovery([
+      device([
+        { type: "binary", property: "state", access: 7, value_on: "ON", value_off: "OFF" },
+      ]),
+    ]);
+    const order = d.orders.find((o: any) => o.key === "state");
+    expect(order.valueOn).toBe("ON");
+    expect(order.valueOff).toBe("OFF");
+  });
+
+  it("keeps literal boolean wire values as booleans", () => {
+    const [d] = runDiscovery([
+      device([
+        { type: "binary", property: "led_night", access: 7, value_on: true, value_off: false },
+      ]),
+    ]);
+    const order = d.orders.find((o: any) => o.key === "led_night");
+    expect(order.valueOn).toBe(true);
+    expect(order.valueOff).toBe(false);
+  });
+
+  it("leaves wire values undefined on non-binary orders", () => {
+    const [d] = runDiscovery([
+      device([
+        { type: "numeric", property: "brightness", access: 7, value_min: 0, value_max: 254 },
+      ]),
+    ]);
+    const order = d.orders.find((o: any) => o.key === "brightness");
+    expect(order.valueOn).toBeUndefined();
+    expect(order.valueOff).toBeUndefined();
+  });
+});

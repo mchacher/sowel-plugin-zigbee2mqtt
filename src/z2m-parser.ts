@@ -55,6 +55,11 @@ const Z2M_TYPE_TO_DATA_TYPE: Record<string, DataType> = {
 const Z2M_ACCESS_STATE = 0b001;
 const Z2M_ACCESS_SET = 0b010;
 
+/** Keep only JSON primitives — value_on/value_off are untyped in the Z2M schema. */
+function wirePrimitive(v: unknown): string | number | boolean | undefined {
+  return typeof v === "string" || typeof v === "number" || typeof v === "boolean" ? v : undefined;
+}
+
 const PROPERTY_TO_CATEGORY: Record<string, DataCategory> = {
   occupancy: "motion", presence: "motion",
   temperature: "temperature", device_temperature: "temperature", soil_temperature: "temperature",
@@ -162,7 +167,11 @@ interface DiscoveredDevice {
   ieeeAddress?: string; friendlyName: string; manufacturer?: string; model?: string;
   rawExpose?: unknown;
   data: { key: string; type: string; category: string; unit?: string; enumValues?: string[] }[];
-  orders: { key: string; type: string; category?: string; min?: number; max?: number; enumValues?: string[]; unit?: string }[];
+  orders: {
+    key: string; type: string; category?: string; min?: number; max?: number;
+    enumValues?: string[]; unit?: string;
+    valueOn?: string | number | boolean; valueOff?: string | number | boolean;
+  }[];
 }
 
 interface DeviceManager {
@@ -328,6 +337,12 @@ export class Zigbee2MqttParser {
         orders.push({
           key: expose.property, type: dataType, category: orderCat,
           min: expose.value_min, max: expose.value_max, enumValues: expose.values, unit: expose.unit,
+          // Wire representations of a binary expose (usually "ON"/"OFF", but
+          // some devices use literal booleans or "LOCK"/"UNLOCK"). Core maps
+          // boolean order values onto them at dispatch (Sowel >= 1.34), so
+          // executeOrder stays a pass-through. Fixes silently dropped
+          // {"state": true} payloads (issue #4).
+          valueOn: wirePrimitive(expose.value_on), valueOff: wirePrimitive(expose.value_off),
         });
       }
     }
