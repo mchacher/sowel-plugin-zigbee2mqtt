@@ -74,6 +74,8 @@ class Zigbee2MqttPlugin implements IntegrationPlugin {
   private status: IntegrationStatus = "disconnected";
   /** One entry per Zigbee2MQTT network, in `base_topic` order. */
   private topics: TopicConfig[] = [];
+  /** Records which network discovered each device — authoritative for order routing. */
+  private registry: DiscoveryRegistry | null = null;
 
   constructor(deps: PluginDeps) {
     this.logger = deps.logger;
@@ -131,6 +133,7 @@ class Zigbee2MqttPlugin implements IntegrationPlugin {
         this.deviceManager,
         this.logger,
       );
+      this.registry = registry;
       for (const topic of this.topics) {
         new Zigbee2MqttParser({
           integrationId: INTEGRATION_ID,
@@ -161,6 +164,7 @@ class Zigbee2MqttPlugin implements IntegrationPlugin {
     if (this.mqttConnector) {
       await this.mqttConnector.disconnect();
       this.mqttConnector = null;
+      this.registry = null;
       this.status = "disconnected";
       this.eventBus.emit({ type: "system.integration.disconnected", integrationId: this.id });
       this.logger.info("Zigbee2MQTT stopped");
@@ -169,9 +173,15 @@ class Zigbee2MqttPlugin implements IntegrationPlugin {
 
   async executeOrder(device: Device, orderKey: string, value: unknown): Promise<void> {
     if (!this.mqttConnector?.isConnected()) throw new Error("MQTT not connected");
-    // The source id carries the network prefix, so it tells us which Z2M
-    // instance owns the device and what its friendly name is over there.
-    const { baseTopic, deviceName } = resolveDevice(this.topics, device.sourceDeviceId);
+    // The network that discovered the device owns it — the prefix alone can't
+    // tell, since a `topic:` entry produces unprefixed ids. The prefix-based
+    // fallback only covers an order arriving before `bridge/devices` (retained,
+    // so received right after connect).
+    const { baseTopic, deviceName } = resolveDevice(
+      this.topics,
+      device.sourceDeviceId,
+      this.registry?.ownerOf(device.sourceDeviceId),
+    );
     const topic = `${baseTopic}/${deviceName}/set`;
 
     // Composite payload support: when `value` is a plain object, publish it

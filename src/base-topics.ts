@@ -76,10 +76,29 @@ export interface ResolvedDevice {
  * of the prefixing done at discovery, used to address the right instance when
  * publishing an order.
  *
- * Longest prefix wins, so a topic that is itself a prefix of another one still
- * resolves to the right network. Anything unprefixed belongs to the primary.
+ * When `ownerBaseTopic` is known (recorded at discovery), it is authoritative:
+ * a `topic:` network's devices carry no prefix at all, so only discovery can
+ * tell them apart from the primary's.
+ *
+ * Otherwise, longest prefix wins, so a topic that is itself a prefix of
+ * another one still resolves to the right network. Anything unprefixed belongs
+ * to the primary.
  */
-export function resolveDevice(topics: TopicConfig[], sourceDeviceId: string): ResolvedDevice {
+export function resolveDevice(
+  topics: TopicConfig[],
+  sourceDeviceId: string,
+  ownerBaseTopic?: string,
+): ResolvedDevice {
+  const owner = ownerBaseTopic
+    ? topics.find((t) => t.baseTopic === ownerBaseTopic)
+    : undefined;
+  if (owner && sourceDeviceId.startsWith(owner.devicePrefix)) {
+    return {
+      baseTopic: owner.baseTopic,
+      deviceName: sourceDeviceId.slice(owner.devicePrefix.length),
+    };
+  }
+
   const prefixed = topics
     .filter((t) => t.devicePrefix !== "")
     .sort((a, b) => b.devicePrefix.length - a.devicePrefix.length);

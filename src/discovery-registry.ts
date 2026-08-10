@@ -20,6 +20,7 @@ interface DeviceManager {
 interface Logger {
   child(bindings: Record<string, unknown>): Logger;
   info(obj: Record<string, unknown>, msg: string): void;
+  warn(obj: Record<string, unknown>, msg: string): void;
 }
 
 export class DiscoveryRegistry {
@@ -41,9 +42,13 @@ export class DiscoveryRegistry {
     this.logger = logger.child({ module: "discovery-registry" });
   }
 
+  /** Collisions already logged, so a re-announce doesn't warn again. */
+  private readonly warnedCollisions = new Set<string>();
+
   /** Record one network's active source ids, then prune on the union. */
   report(baseTopic: string, activeDeviceIds: Set<string>): void {
     this.reported.set(baseTopic, activeDeviceIds);
+    this.warnOnCollisions(baseTopic, activeDeviceIds);
 
     if (this.reported.size < this.expected.size) {
       const pending = [...this.expected].filter((t) => !this.reported.has(t));
@@ -61,5 +66,37 @@ export class DiscoveryRegistry {
 
     this.deviceManager.removeStaleDevices(this.integrationId, union);
     this.deviceManager.logSummary();
+  }
+
+  /**
+   * A source id announced by two networks means their devices silently merge
+   * into one Sowel device — possible when a `topic:` entry opts out of
+   * prefixing. Nothing else surfaces it, so log it loudly, once per id.
+   */
+  private warnOnCollisions(baseTopic: string, activeDeviceIds: Set<string>): void {
+    for (const [otherTopic, otherIds] of this.reported) {
+      if (otherTopic === baseTopic) continue;
+      for (const id of activeDeviceIds) {
+        if (otherIds.has(id) && !this.warnedCollisions.has(id)) {
+          this.warnedCollisions.add(id);
+          this.logger.warn(
+            { sourceDeviceId: id, networks: [otherTopic, baseTopic] },
+            "Same source id announced by two networks: their devices merge into one, orders go to the first configured network",
+          );
+        }
+      }
+    }
+  }
+
+  /**
+   * Base topic of the network that discovered this source id, if it has
+   * reported yet. On a cross-network id collision (possible when a `topic:`
+   * entry opts out of prefixing), the first network in configured order wins.
+   */
+  ownerOf(sourceDeviceId: string): string | undefined {
+    for (const topic of this.expected) {
+      if (this.reported.get(topic)?.has(sourceDeviceId)) return topic;
+    }
+    return undefined;
   }
 }
