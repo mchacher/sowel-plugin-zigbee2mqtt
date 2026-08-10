@@ -2,8 +2,8 @@
   "id": "zigbee2mqtt",
   "type": "integration",
   "name": "Zigbee2MQTT",
-  "version": "2.3.0",
-  "description": "Zigbee devices via Zigbee2MQTT MQTT bridge",
+  "version": "2.4.0",
+  "description": "Zigbee devices via Zigbee2MQTT MQTT bridge (multi-coordinator)",
   "icon": "Radio",
   "repo": "mchacher/sowel-plugin-zigbee2mqtt",
   "author": "mchacher",
@@ -37,10 +37,11 @@
     },
     {
       "key": "base_topic",
-      "label": "Zigbee2MQTT Base Topic",
+      "label": "Zigbee2MQTT Base Topic(s)",
       "type": "text",
       "required": false,
-      "defaultValue": "zigbee2mqtt"
+      "defaultValue": "zigbee2mqtt",
+      "placeholder": "zigbee2mqtt, zigbee2mqtt_maison2"
     }
   ],
   "apiVersion": 2

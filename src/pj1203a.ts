@@ -195,16 +195,24 @@ const SOURCE = "zigbee2mqtt";
 
 export class Pj1203aHandler {
   private readonly integrationId: string;
+  /** Network prefix applied to source ids — see base-topics.ts. Empty for the primary network. */
+  private readonly devicePrefix: string;
   private readonly deviceManager: DeviceManager;
   private readonly logger: Logger;
 
-  /** friendly_name → per-channel Sowel source ids. */
+  /** friendly_name (unprefixed, as it appears on MQTT) → per-channel Sowel source ids. */
   private readonly known = new Map<string, KnownMeter>();
   /** Per-channel cumulative-counter baseline, hydrated lazily from device_data. */
   private readonly baselines = new Map<string, Baseline>();
 
-  constructor(integrationId: string, deviceManager: DeviceManager, logger: Logger) {
+  constructor(
+    integrationId: string,
+    devicePrefix: string,
+    deviceManager: DeviceManager,
+    logger: Logger,
+  ) {
     this.integrationId = integrationId;
+    this.devicePrefix = devicePrefix;
     this.deviceManager = deviceManager;
     this.logger = logger.child({ module: "pj1203a" });
   }
@@ -228,7 +236,7 @@ export class Pj1203aHandler {
   }): string[] {
     const channelIds = {} as Record<Pj1203aChannel, string>;
     for (const channel of PJ1203A_CHANNELS) {
-      const sid = channelSourceDeviceId(device.friendly_name, channel);
+      const sid = channelSourceDeviceId(`${this.devicePrefix}${device.friendly_name}`, channel);
       channelIds[channel] = sid;
       this.deviceManager.upsertFromDiscovery(this.integrationId, SOURCE, {
         // friendlyName drives sourceDeviceId in upsertFromDiscovery

@@ -8,16 +8,57 @@ It subscribes to `<base_topic>/bridge/devices` for discovery, `<base_topic>/<dev
 
 ## Settings
 
-| Key              | Required | Default      | Description               |
-| ---------------- | -------- | ------------ | ------------------------- |
-| `mqtt_url`       | yes      | —            | `mqtt://host:1883`        |
-| `mqtt_username`  | no       | —            |                           |
-| `mqtt_password`  | no       | —            |                           |
-| `mqtt_client_id` | no       | `sowel-z2m`  | A random suffix is added  |
-| `base_topic`     | no       | `zigbee2mqtt`| Zigbee2MQTT base topic    |
+| Key              | Required | Default      | Description                                 |
+| ---------------- | -------- | ------------ | ------------------------------------------- |
+| `mqtt_url`       | yes      | —            | `mqtt://host:1883`                          |
+| `mqtt_username`  | no       | —            |                                             |
+| `mqtt_password`  | no       | —            |                                             |
+| `mqtt_client_id` | no       | `sowel-z2m`  | A random suffix is added                    |
+| `base_topic`     | no       | `zigbee2mqtt`| Base topic, or a comma-separated list — see below |
 
 Discovery is generic: every expose becomes a device data (readable) and/or a device order (writable),
 with its Sowel `DataCategory` inferred from the property name.
+
+## Several Zigbee coordinators
+
+Zigbee2MQTT drives **one coordinator per instance**, so a home with several coordinators runs several
+Z2M instances — each with its own `base_topic`, all sharing a single MQTT broker. Sharing a base topic
+between instances is not an option: `bridge/devices`, `bridge/info` and `bridge/state` are retained
+topics, so the instances would overwrite each other's device list.
+
+The plugin serves them all from one integration. List the base topics in `base_topic`, in a stable
+order:
+
+```
+zigbee2mqtt, zigbee2mqtt_maison2, zigbee2mqtt_garage
+```
+
+- The **first** network is primary: its devices keep their bare `friendly_name` as Sowel source id,
+  so an existing install and its equipment bindings survive the upgrade untouched.
+- Every **other** network prefixes its devices with its base topic — `zigbee2mqtt_maison2/salon` —
+  so two networks hosting the same friendly name stay two distinct Sowel devices.
+- An entry can override that prefix with `topic:prefix` (`zigbee2mqtt_maison2:m2` → `m2/salon`), or
+  drop it entirely with a trailing colon (`zigbee2mqtt_maison2:` → `salon`). Dropping the prefix is
+  only safe when friendly names are unique across networks; on a collision the two devices silently
+  become one.
+
+**Do not reorder the list** and do not change a prefix once devices exist: source ids are derived
+from it, so any change orphans the affected devices and drops their equipment bindings.
+
+Stale-device cleanup runs on the union of all networks and only once each of them has published its
+`bridge/devices`. A network whose Z2M instance is down therefore never gets its devices purged.
+
+Orders are routed back to the owning instance by stripping the prefix from the source id.
+
+Two Zigbee networks in the same building should use **different Zigbee channels** (Z2M's
+`advanced.channel`); otherwise they share airtime and both degrade.
+
+### Upgrading from ≤ 2.3.x
+
+Up to 2.3.x the plugin passed the base topic where the core expects an integration id — which only
+worked because the default topic and the plugin id are both `zigbee2mqtt`. An install with a custom
+`base_topic` had its devices stored under that topic; on first start 2.4.0 migrates them to the
+`zigbee2mqtt` integration id, keeping their bindings. Installs on the default topic are unaffected.
 
 ## Tuya PJ-1203A — bidirectional dual-channel energy meter
 
