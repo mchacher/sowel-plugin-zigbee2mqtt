@@ -8,6 +8,8 @@
 
 import { MqttConnector } from "./mqtt-connector.js";
 import { Zigbee2MqttParser } from "./z2m-parser.js";
+import { DiscoveryRegistry } from "./discovery-registry.js";
+import { parseBaseTopics, resolveDevice, type TopicConfig } from "./base-topics.js";
 
 // ============================================================
 // Local type definitions (no imports from Sowel source)
@@ -30,6 +32,8 @@ interface DeviceManager {
   updateDeviceData(integrationId: string, sourceDeviceId: string, payload: Record<string, unknown>): void;
   updateDeviceStatus(integrationId: string, sourceDeviceId: string, status: string): void;
   removeStaleDevices(integrationId: string, activeIds: Set<string>): void;
+  /** Available since Sowel v1.4 — used to reclaim devices stored under a legacy integration id. */
+  migrateIntegrationId?(oldIntegrationId: string, newIntegrationId: string): number;
   logSummary(): void;
 }
 
@@ -68,6 +72,10 @@ class Zigbee2MqttPlugin implements IntegrationPlugin {
   private deviceManager: DeviceManager;
   private mqttConnector: MqttConnector | null = null;
   private status: IntegrationStatus = "disconnected";
+  /** One entry per Zigbee2MQTT network, in `base_topic` order. */
+  private topics: TopicConfig[] = [];
+  /** Records which network discovered each device — authoritative for order routing. */
+  private registry: DiscoveryRegistry | null = null;
 
   constructor(deps: PluginDeps) {
     this.logger = deps.logger;
@@ -90,7 +98,7 @@ class Zigbee2MqttPlugin implements IntegrationPlugin {
       { key: "mqtt_username", label: "MQTT Username", type: "text", required: false },
       { key: "mqtt_password", label: "MQTT Password", type: "password", required: false },
       { key: "mqtt_client_id", label: "MQTT Client ID", type: "text", required: false, defaultValue: "sowel-z2m" },
-      { key: "base_topic", label: "Zigbee2MQTT Base Topic", type: "text", required: false, defaultValue: "zigbee2mqtt" },
+      { key: "base_topic", label: "Zigbee2MQTT Base Topic(s)", type: "text", required: false, defaultValue: "zigbee2mqtt", placeholder: "zigbee2mqtt, zigbee2mqtt_maison2" },
     ];
   }
 
@@ -104,9 +112,11 @@ class Zigbee2MqttPlugin implements IntegrationPlugin {
     // process holding the same clientId can't kick this one in a loop.
     const baseClientId = this.getSetting("mqtt_client_id") ?? "sowel-z2m";
     const mqttClientId = `${baseClientId}-${Math.random().toString(36).slice(2, 8)}`;
-    const baseTopic = this.getSetting("base_topic") ?? "zigbee2mqtt";
+    this.topics = parseBaseTopics(this.getSetting("base_topic"));
 
     try {
+      this.reclaimLegacyDevices();
+
       this.mqttConnector = new MqttConnector(
         mqttUrl,
         { username: mqttUsername, password: mqttPassword, clientId: mqttClientId },
@@ -114,14 +124,36 @@ class Zigbee2MqttPlugin implements IntegrationPlugin {
       );
       await this.mqttConnector.connect();
 
-      const parser = new Zigbee2MqttParser(baseTopic, this.mqttConnector, this.deviceManager, this.logger);
-      parser.start();
+      // Zigbee2MQTT drives one coordinator per instance, so each network is a
+      // separate parser — but they share the MQTT connection, the Sowel
+      // integration id, and the stale-device registry.
+      const registry = new DiscoveryRegistry(
+        this.topics.map((t) => t.baseTopic),
+        INTEGRATION_ID,
+        this.deviceManager,
+        this.logger,
+      );
+      this.registry = registry;
+      for (const topic of this.topics) {
+        new Zigbee2MqttParser({
+          integrationId: INTEGRATION_ID,
+          baseTopic: topic.baseTopic,
+          devicePrefix: topic.devicePrefix,
+          mqttConnector: this.mqttConnector,
+          deviceManager: this.deviceManager,
+          registry,
+          logger: this.logger,
+        }).start();
+      }
 
       this.status = this.mqttConnector.isConnected() ? "connected" : "disconnected";
       if (this.status === "connected") {
         this.eventBus.emit({ type: "system.integration.connected", integrationId: this.id });
       }
-      this.logger.info("Zigbee2MQTT started");
+      this.logger.info(
+        { networks: this.topics.map((t) => t.baseTopic) } as Record<string, unknown>,
+        "Zigbee2MQTT started",
+      );
     } catch (err) {
       this.status = "error";
       this.logger.error({ err } as Record<string, unknown>, "Failed to start Zigbee2MQTT");
@@ -132,6 +164,7 @@ class Zigbee2MqttPlugin implements IntegrationPlugin {
     if (this.mqttConnector) {
       await this.mqttConnector.disconnect();
       this.mqttConnector = null;
+      this.registry = null;
       this.status = "disconnected";
       this.eventBus.emit({ type: "system.integration.disconnected", integrationId: this.id });
       this.logger.info("Zigbee2MQTT stopped");
@@ -140,8 +173,16 @@ class Zigbee2MqttPlugin implements IntegrationPlugin {
 
   async executeOrder(device: Device, orderKey: string, value: unknown): Promise<void> {
     if (!this.mqttConnector?.isConnected()) throw new Error("MQTT not connected");
-    const baseTopic = this.getSetting("base_topic") ?? "zigbee2mqtt";
-    const topic = `${baseTopic}/${device.sourceDeviceId}/set`;
+    // The network that discovered the device owns it — the prefix alone can't
+    // tell, since a `topic:` entry produces unprefixed ids. The prefix-based
+    // fallback only covers an order arriving before `bridge/devices` (retained,
+    // so received right after connect).
+    const { baseTopic, deviceName } = resolveDevice(
+      this.topics,
+      device.sourceDeviceId,
+      this.registry?.ownerOf(device.sourceDeviceId),
+    );
+    const topic = `${baseTopic}/${deviceName}/set`;
 
     // Composite payload support: when `value` is a plain object, publish it
     // directly as the MQTT payload instead of wrapping under `orderKey`.
@@ -155,6 +196,28 @@ class Zigbee2MqttPlugin implements IntegrationPlugin {
       : { [orderKey]: value };
 
     this.mqttConnector.publish(topic, JSON.stringify(payload));
+  }
+
+  /**
+   * Up to v2.3.x the parser passed the base topic where the core expects an
+   * integration id, so an install whose `base_topic` was not the default
+   * `zigbee2mqtt` stored its devices under that topic. Now that every network
+   * reports under `zigbee2mqtt`, those rows would be orphaned — hand them over
+   * once, on the primary network only (the secondary ones are new by
+   * definition, and their devices are prefixed).
+   */
+  private reclaimLegacyDevices(): void {
+    const primary = this.topics[0]?.baseTopic;
+    if (!primary || primary === INTEGRATION_ID) return;
+    if (typeof this.deviceManager.migrateIntegrationId !== "function") return;
+
+    const moved = this.deviceManager.migrateIntegrationId(primary, INTEGRATION_ID);
+    if (moved > 0) {
+      this.logger.info(
+        { from: primary, to: INTEGRATION_ID, moved } as Record<string, unknown>,
+        "Migrated devices from legacy base-topic integration id",
+      );
+    }
   }
 
   private getSetting(key: string): string | undefined { return this.settingsManager.get(`${SETTINGS_PREFIX}${key}`); }

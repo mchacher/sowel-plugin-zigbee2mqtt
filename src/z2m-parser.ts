@@ -4,6 +4,7 @@
  */
 
 import type { MqttConnector } from "./mqtt-connector.js";
+import type { DiscoveryRegistry } from "./discovery-registry.js";
 import { Pj1203aHandler, isPj1203a } from "./pj1203a.js";
 
 // ============================================================
@@ -195,7 +196,6 @@ interface DeviceManager {
   upsertFromDiscovery(integrationId: string, source: string, discovered: DiscoveredDevice): void;
   updateDeviceData(integrationId: string, sourceDeviceId: string, payload: Record<string, unknown>): void;
   updateDeviceStatus(integrationId: string, sourceDeviceId: string, status: string): void;
-  removeStaleDevices(integrationId: string, activeIds: Set<string>): void;
   /** Available since Sowel v1.5.1 — used by the PJ-1203A handler for baselines. */
   getDeviceDataValue?(integrationId: string, sourceDeviceId: string, key: string): string | number | boolean | null;
   logSummary(): void;
@@ -212,23 +212,58 @@ interface Logger {
 // Parser
 // ============================================================
 
+export interface ParserOptions {
+  /** Sowel integration id — the same for every network the plugin serves. */
+  integrationId: string;
+  /** MQTT base topic of this Z2M instance. */
+  baseTopic: string;
+  /** Prepended to friendly names to build Sowel source ids. Empty for the primary network. */
+  devicePrefix: string;
+  mqttConnector: MqttConnector;
+  deviceManager: DeviceManager;
+  /** Shared across networks so stale cleanup runs on the union of their devices. */
+  registry: DiscoveryRegistry;
+  logger: Logger;
+}
+
+/** One instance per Zigbee2MQTT network; several share the MQTT connection. */
 export class Zigbee2MqttParser {
   private logger: Logger;
   private mqttConnector: MqttConnector;
   private deviceManager: DeviceManager;
+  private registry: DiscoveryRegistry;
+  private integrationId: string;
   private baseTopic: string;
+  private devicePrefix: string;
   /** Devices needing a bespoke multi-channel mapping (see pj1203a.ts). */
   private pj1203a: Pj1203aHandler;
   /** null until bridge/info is seen; availability messages are queued meanwhile. */
   private availabilityEnabled: boolean | null = null;
   private pendingAvailability: { deviceName: string; status: "online" | "offline" }[] = [];
 
-  constructor(baseTopic: string, mqttConnector: MqttConnector, deviceManager: DeviceManager, logger: Logger) {
-    this.baseTopic = baseTopic;
-    this.mqttConnector = mqttConnector;
-    this.deviceManager = deviceManager;
-    this.logger = logger.child({ module: "z2m-parser" });
-    this.pj1203a = new Pj1203aHandler(baseTopic, deviceManager, this.logger);
+  constructor(options: ParserOptions) {
+    this.integrationId = options.integrationId;
+    this.baseTopic = options.baseTopic;
+    this.devicePrefix = options.devicePrefix;
+    this.mqttConnector = options.mqttConnector;
+    this.deviceManager = options.deviceManager;
+    this.registry = options.registry;
+    this.logger = options.logger.child({ module: "z2m-parser", baseTopic: options.baseTopic });
+    this.pj1203a = new Pj1203aHandler(
+      options.integrationId,
+      options.devicePrefix,
+      options.deviceManager,
+      this.logger,
+    );
+  }
+
+  /**
+   * Sowel source device id for a Z2M friendly name on this network.
+   * Only the prefix distinguishes two networks, so an id stays stable as long
+   * as the base topic list keeps its order.
+   */
+  private sourceId(friendlyName: string): string {
+    return `${this.devicePrefix}${friendlyName}`;
   }
 
   start(): void {
@@ -286,13 +321,12 @@ export class Zigbee2MqttParser {
           continue;
         }
 
-        currentNames.add(z2mDevice.friendly_name);
+        currentNames.add(this.sourceId(z2mDevice.friendly_name));
         const parsed = this.parseZ2MDevice(z2mDevice);
-        if (parsed) this.deviceManager.upsertFromDiscovery(this.baseTopic, "zigbee2mqtt", parsed);
+        if (parsed) this.deviceManager.upsertFromDiscovery(this.integrationId, "zigbee2mqtt", parsed);
       }
       this.pj1203a.retainOnly(pj1203aNames);
-      this.deviceManager.removeStaleDevices(this.baseTopic, currentNames);
-      this.deviceManager.logSummary();
+      this.registry.report(this.baseTopic, currentNames);
     } catch (err) { this.logger.error({ err } as Record<string, unknown>, "Failed to parse bridge/devices"); }
   }
 
@@ -317,7 +351,11 @@ export class Zigbee2MqttParser {
         this.pj1203a.handleState(rest, data as Record<string, unknown>);
         return;
       }
-      this.deviceManager.updateDeviceData(this.baseTopic, rest, data as Record<string, unknown>);
+      this.deviceManager.updateDeviceData(
+        this.integrationId,
+        this.sourceId(rest),
+        data as Record<string, unknown>,
+      );
     } catch { /* non-JSON ignored */ }
   }
 
@@ -351,7 +389,7 @@ export class Zigbee2MqttParser {
       this.pj1203a.handleAvailability(deviceName, status);
       return;
     }
-    this.deviceManager.updateDeviceStatus(this.baseTopic, deviceName, status);
+    this.deviceManager.updateDeviceStatus(this.integrationId, this.sourceId(deviceName), status);
   }
 
   private parseZ2MDevice(z2mDevice: Z2MDevice): DiscoveredDevice | null {
@@ -362,7 +400,9 @@ export class Zigbee2MqttParser {
     this.flattenExposes(exposes, allProperties, data, orders, z2mDevice.friendly_name);
     return {
       ieeeAddress: z2mDevice.ieee_address,
-      friendlyName: z2mDevice.friendly_name,
+      // friendlyName drives sourceDeviceId in upsertFromDiscovery — prefixed so
+      // two networks can host the same friendly name.
+      friendlyName: this.sourceId(z2mDevice.friendly_name),
       manufacturer: z2mDevice.definition?.vendor ?? z2mDevice.manufacturer,
       model: z2mDevice.definition?.model ?? z2mDevice.model_id,
       data, orders, rawExpose: exposes,

@@ -94,7 +94,15 @@ function runDiscovery(z2mDevices: unknown[]): any[] {
     info: () => {},
     error: () => {},
   } as any;
-  const parser = new Zigbee2MqttParser("z2m", mqtt as any, deviceManager as any, logger);
+  const parser = new Zigbee2MqttParser({
+    integrationId: "zigbee2mqtt",
+    baseTopic: "z2m",
+    devicePrefix: "",
+    mqttConnector: mqtt as any,
+    deviceManager: deviceManager as any,
+    registry: { report: () => {} } as any,
+    logger,
+  });
   parser.start();
   handlers.get("z2m/bridge/devices")!("z2m/bridge/devices", Buffer.from(JSON.stringify(z2mDevices)));
   return discovered;
@@ -170,7 +178,15 @@ function makeParser() {
     logSummary: () => {},
   };
   const logger = { child: () => logger, info: () => {}, error: () => {}, debug: () => {} } as any;
-  const parser = new Zigbee2MqttParser("z2m", mqtt as any, deviceManager as any, logger);
+  const parser = new Zigbee2MqttParser({
+    integrationId: "zigbee2mqtt",
+    baseTopic: "z2m",
+    devicePrefix: "",
+    mqttConnector: mqtt as any,
+    deviceManager: deviceManager as any,
+    registry: { report: () => {} } as any,
+    logger,
+  });
   parser.start();
   const send = (topic: string, payload: unknown) =>
     handlers.get(

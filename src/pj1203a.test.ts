@@ -167,7 +167,19 @@ describe("Pj1203aHandler", () => {
 
   beforeEach(() => {
     dm = new FakeDeviceManager();
-    handler = new Pj1203aHandler("zigbee2mqtt", dm, noopLogger);
+    handler = new Pj1203aHandler("zigbee2mqtt", "", dm, noopLogger);
+  });
+
+  it("prefixes the channel ids on a secondary network", () => {
+    const prefixed = new Pj1203aHandler("zigbee2mqtt", "zigbee2mqtt_maison2/", dm, noopLogger);
+    const ids = prefixed.discover(DEVICE);
+
+    expect(ids).toEqual([
+      channelSourceDeviceId("zigbee2mqtt_maison2/compteur", "a"),
+      channelSourceDeviceId("zigbee2mqtt_maison2/compteur", "b"),
+    ]);
+    // State still arrives under the bare friendly name on MQTT.
+    expect(prefixed.isKnown("compteur")).toBe(true);
   });
 
   it("registers one Sowel device per channel, Shelly-shaped", () => {
