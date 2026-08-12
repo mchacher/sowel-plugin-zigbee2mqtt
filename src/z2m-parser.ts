@@ -33,6 +33,8 @@ interface Z2MDevice {
   definition?: { model: string; vendor: string; description: string; exposes: Z2MExpose[] };
   manufacturer?: string;
   model_id?: string;
+  /** "Battery", "Mains (single phase)", "DC Source", "Unknown", … */
+  power_source?: string;
   supported: boolean;
   disabled: boolean;
 }
@@ -63,6 +65,9 @@ const PROPERTY_TO_CATEGORY: Record<string, DataCategory> = {
   pressure: "pressure",
   illuminance: "luminosity", illuminance_lux: "luminosity",
   battery: "battery",
+  // Sowel's low-battery monitor (spec 143) watches the battery category; this
+  // boolean is the only battery signal some sensors expose (e.g. ZP01).
+  battery_low: "battery",
   voltage: "voltage", current: "current",
   power: "power", energy: "energy",
   co2: "co2", voc: "voc",
@@ -91,6 +96,21 @@ const LIGHT_INDICATOR_PROPERTIES = new Set(["brightness", "color_temp", "color",
 // ============================================================
 // Category inference
 // ============================================================
+
+/**
+ * Map Zigbee2MQTT's `power_source` onto Sowel's vocabulary (spec 143). Sowel
+ * only alerts on low batteries of devices it knows run on one, so an unmapped
+ * or missing value must stay `unknown` (Sowel then falls back to its own
+ * heuristic) rather than guess.
+ */
+export function mapPowerSource(powerSource?: string): PowerSource {
+  if (!powerSource) return "unknown";
+  const s = powerSource.toLowerCase();
+  if (s.includes("battery")) return "battery";
+  if (s.includes("mains")) return "mains";
+  if (s.includes("dc source")) return "dc";
+  return "unknown";
+}
 
 export function inferCategory(property: string, allProperties: Set<string>, parentExposeType?: string): DataCategory {
   if (property === "state") {
@@ -125,8 +145,11 @@ function collectProperties(exposes: Z2MExpose[]): Set<string> {
 // Types for DeviceManager interaction
 // ============================================================
 
+type PowerSource = "battery" | "mains" | "dc" | "unknown";
+
 interface DiscoveredDevice {
   ieeeAddress?: string; friendlyName: string; manufacturer?: string; model?: string;
+  powerSource?: PowerSource;
   rawExpose?: unknown;
   data: { key: string; type: string; category: string; unit?: string; enumValues?: string[] }[];
   orders: { key: string; type: string; category?: string; min?: number; max?: number; enumValues?: string[]; unit?: string }[];
@@ -301,6 +324,7 @@ export class Zigbee2MqttParser {
       friendlyName: this.sourceId(z2mDevice.friendly_name),
       manufacturer: z2mDevice.definition?.vendor ?? z2mDevice.manufacturer,
       model: z2mDevice.definition?.model ?? z2mDevice.model_id,
+      powerSource: mapPowerSource(z2mDevice.power_source),
       data, orders, rawExpose: exposes,
     };
   }
