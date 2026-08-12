@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { inferCategory, inferOrderCategory } from "./z2m-parser.js";
+import { inferCategory, inferOrderCategory, mapPowerSource } from "./z2m-parser.js";
 
 describe("inferCategory", () => {
   it("maps a contact sensor to contact_door (recognised by core for open/closed + openDoors)", () => {
@@ -363,5 +363,31 @@ describe("availabilityEnabledFromBridgeInfo", () => {
     expect(availabilityEnabledFromBridgeInfo({ config: {} })).toBe(false);
     expect(availabilityEnabledFromBridgeInfo({})).toBe(false);
     expect(availabilityEnabledFromBridgeInfo(null)).toBe(false);
+  });
+});
+
+describe("mapPowerSource", () => {
+  it("maps the values Zigbee2MQTT actually publishes", () => {
+    expect(mapPowerSource("Battery")).toBe("battery");
+    expect(mapPowerSource("Mains (single phase)")).toBe("mains");
+    expect(mapPowerSource("Mains (3 phase)")).toBe("mains");
+    expect(mapPowerSource("DC Source")).toBe("dc");
+  });
+
+  it("reads the emergency-mains variants as mains — they are not battery-run", () => {
+    expect(mapPowerSource("Emergency mains and transfer switch")).toBe("mains");
+    expect(mapPowerSource("Emergency mains constantly powered")).toBe("mains");
+  });
+
+  it("stays unknown when absent or unrecognised, so Sowel keeps its own heuristic", () => {
+    expect(mapPowerSource(undefined)).toBe("unknown");
+    expect(mapPowerSource("")).toBe("unknown");
+    expect(mapPowerSource("Unknown")).toBe("unknown");
+  });
+});
+
+describe("battery_low", () => {
+  it("is categorised battery so the low-battery monitor sees it (spec 143)", () => {
+    expect(inferCategory("battery_low", new Set(["battery_low", "occupancy"]))).toBe("battery");
   });
 });

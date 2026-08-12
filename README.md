@@ -65,6 +65,18 @@ worked because the default topic and the plugin id are both `zigbee2mqtt`. An in
 `base_topic` had its devices stored under that topic; on first start 2.4.0 migrates them to the
 `zigbee2mqtt` integration id, keeping their bindings. Installs on the default topic are unaffected.
 
+## Battery reporting (2.5.0+)
+
+Two things feed Sowel's low-battery monitoring (core spec 143):
+
+- every discovered device declares its **power source** from Zigbee2MQTT's `power_source`
+  (`Battery` → `battery`, any `Mains …` → `mains`, `DC Source` → `dc`, anything else → `unknown`),
+  so Sowel only warns about devices that actually run on a cell;
+- `battery_low` is categorised **battery** instead of `generic`. Sensors that expose only that
+  boolean (Tuya ZP01 motion detectors, for instance) were invisible to any battery logic before.
+
+Older Sowel cores ignore the extra field, so the plugin stays compatible with them.
+
 ## Tuya PJ-1203A — bidirectional dual-channel energy meter
 
 This meter gets a dedicated mapping (`src/pj1203a.ts`), because the generic flattening cannot feed
