@@ -78,6 +78,21 @@ export function availabilityEnabledFromBridgeInfo(info: unknown): boolean {
   return false;
 }
 
+/**
+ * Read `bridge/state`, which Z2M publishes as `{"state":"online"}` (2.x) and
+ * used to publish as the bare string `online` (1.x). The same shapes come back
+ * as the broker-delivered last will when the instance dies. Anything else is
+ * ignored rather than guessed.
+ */
+export function parseBridgeState(raw: string): "online" | "offline" | null {
+  let value: unknown = raw.trim();
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    value = typeof parsed === "object" && parsed !== null ? (parsed as { state?: unknown }).state : parsed;
+  } catch { /* bare string (Z2M 1.x) — keep the trimmed payload */ }
+  return value === "online" || value === "offline" ? value : null;
+}
+
 const PROPERTY_TO_CATEGORY: Record<string, DataCategory> = {
   occupancy: "motion", presence: "motion",
   temperature: "temperature", device_temperature: "temperature", soil_temperature: "temperature",
@@ -204,6 +219,7 @@ interface DeviceManager {
 interface Logger {
   child(bindings: Record<string, unknown>): Logger;
   info(obj: Record<string, unknown>, msg: string): void;
+  warn(obj: Record<string, unknown>, msg: string): void;
   error(obj: Record<string, unknown>, msg: string): void;
   debug(obj: Record<string, unknown>, msg: string): void;
 }
@@ -240,6 +256,10 @@ export class Zigbee2MqttParser {
   /** null until bridge/info is seen; availability messages are queued meanwhile. */
   private availabilityEnabled: boolean | null = null;
   private pendingAvailability: { deviceName: string; status: "online" | "offline" }[] = [];
+  /** Sowel source ids owned by this network, from the last bridge/devices. */
+  private knownSourceIds = new Set<string>();
+  /** null until bridge/state is seen. */
+  private bridgeOnline: boolean | null = null;
 
   constructor(options: ParserOptions) {
     this.integrationId = options.integrationId;
@@ -267,12 +287,59 @@ export class Zigbee2MqttParser {
   }
 
   start(): void {
+    this.mqttConnector.subscribe(`${this.baseTopic}/bridge/state`, (_topic, payload) => { this.handleBridgeState(payload); });
     this.mqttConnector.subscribe(`${this.baseTopic}/bridge/info`, (_topic, payload) => { this.handleBridgeInfo(payload); });
     this.mqttConnector.subscribe(`${this.baseTopic}/bridge/devices`, (_topic, payload) => { this.handleBridgeDevices(payload); });
     this.mqttConnector.subscribe(`${this.baseTopic}/bridge/event`, (_topic, payload) => { this.handleBridgeEvent(payload); });
     this.mqttConnector.subscribe(`${this.baseTopic}/+`, (topic, payload) => { this.handleDeviceState(topic, payload); });
     this.mqttConnector.subscribe(`${this.baseTopic}/+/availability`, (topic, payload) => { this.handleDeviceAvailability(topic, payload); });
     this.logger.info({ baseTopic: this.baseTopic }, "Zigbee2MQTT parser started");
+  }
+
+  /**
+   * Track the Z2M instance itself (`bridge/state`: retained, and the MQTT last
+   * will Z2M registers with the broker).
+   *
+   * A dead Z2M instance is invisible from the device topics alone: it stops
+   * publishing, its retained `<device>/availability` topics keep their last
+   * "online", and the plugin's own MQTT connection to the broker stays up — so
+   * every device of that network sits on a stale "online" for as long as the
+   * instance is down. `bridge/state` is the only signal that the whole network
+   * went away, so mirror it onto the devices it owns.
+   *
+   * This matters most on a multi-instance setup, where one dead coordinator
+   * leaves the integration "connected" and the rest of the home reporting
+   * normally, and on installs that keep Z2M's availability feature disabled,
+   * where nothing else can ever mark a device offline.
+   */
+  private handleBridgeState(payload: Buffer): void {
+    const state = parseBridgeState(payload.toString());
+    if (state === null) return;
+    const online = state === "online";
+    if (this.bridgeOnline === online) return;
+    const first = this.bridgeOnline === null;
+    this.bridgeOnline = online;
+
+    if (online) {
+      // Deliberately no mass "online" here: Z2M republishes its cached states
+      // on startup (and its availability topics when the feature is on), so
+      // devices come back as their own messages arrive. Declaring them up
+      // before hearing from them would restore the very lie this fixes.
+      if (!first) this.logger.info({}, "Zigbee2MQTT bridge back online");
+      return;
+    }
+    this.markAllOffline();
+  }
+
+  /** Mirror a down bridge onto every device it owns. */
+  private markAllOffline(): void {
+    this.logger.warn(
+      { devices: this.knownSourceIds.size },
+      "Zigbee2MQTT bridge offline — marking its devices offline",
+    );
+    for (const sourceDeviceId of this.knownSourceIds) {
+      this.deviceManager.updateDeviceStatus(this.integrationId, sourceDeviceId, "offline");
+    }
   }
 
   /**
@@ -326,7 +393,12 @@ export class Zigbee2MqttParser {
         if (parsed) this.deviceManager.upsertFromDiscovery(this.integrationId, "zigbee2mqtt", parsed);
       }
       this.pj1203a.retainOnly(pj1203aNames);
+      this.knownSourceIds = currentNames;
       this.registry.report(this.baseTopic, currentNames);
+      // Both topics are retained, so on (re)subscribe they can arrive in either
+      // order: a bridge already known to be down must still reach the devices
+      // discovered after it.
+      if (this.bridgeOnline === false) this.markAllOffline();
     } catch (err) { this.logger.error({ err } as Record<string, unknown>, "Failed to parse bridge/devices"); }
   }
 
