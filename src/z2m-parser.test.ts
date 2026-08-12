@@ -156,7 +156,7 @@ describe("discovery order wire values (issue #4)", () => {
 // Availability gating on bridge/info (stale retained topics)
 // ============================================================
 
-import { availabilityEnabledFromBridgeInfo } from "./z2m-parser.js";
+import { availabilityEnabledFromBridgeInfo, parseBridgeState } from "./z2m-parser.js";
 
 function makeParser() {
   const handlers = new Map<string, (topic: string, payload: Buffer) => void>();
@@ -177,7 +177,7 @@ function makeParser() {
     removeStaleDevices: () => {},
     logSummary: () => {},
   };
-  const logger = { child: () => logger, info: () => {}, error: () => {}, debug: () => {} } as any;
+  const logger = { child: () => logger, info: () => {}, warn: () => {}, error: () => {}, debug: () => {} } as any;
   const parser = new Zigbee2MqttParser({
     integrationId: "zigbee2mqtt",
     baseTopic: "z2m",
@@ -188,14 +188,27 @@ function makeParser() {
     logger,
   });
   parser.start();
+  // Bridge topics are subscribed under their exact name, devices under a wildcard.
   const send = (topic: string, payload: unknown) =>
-    handlers.get(
-      topic === "z2m/bridge/info" ? "z2m/bridge/info"
-      : topic === "z2m/bridge/devices" ? "z2m/bridge/devices"
-      : "z2m/+/availability",
-    )!(topic, Buffer.from(JSON.stringify(payload)));
+    (handlers.get(topic) ?? handlers.get("z2m/+/availability")!)(
+      topic,
+      Buffer.from(typeof payload === "string" ? payload : JSON.stringify(payload)),
+    );
   return { send, statusUpdates };
 }
+
+/** Minimal bridge/devices entry — one relay, enough to be discovered. */
+const relayDevice = (friendlyName: string) => ({
+  friendly_name: friendlyName,
+  ieee_address: `0x${friendlyName}`,
+  type: "Router",
+  supported: true,
+  definition: {
+    model: "WHD02",
+    vendor: "Tuya",
+    exposes: [{ type: "binary", property: "state", access: 7, value_on: "ON", value_off: "OFF" }],
+  },
+});
 
 describe("availability gating on bridge/info", () => {
   const info = (availability: unknown) => ({ version: "2.4.0", config: { availability } });
@@ -236,6 +249,101 @@ describe("availability gating on bridge/info", () => {
     send("z2m/bridge/info", info({ enabled: true }));
     send("z2m/relay/availability", { state: "online" });
     expect(statusUpdates).toEqual([{ name: "relay", status: "online" }]);
+  });
+});
+
+// ============================================================
+// A dead Z2M instance (bridge/state / MQTT last will)
+// ============================================================
+
+describe("bridge/state", () => {
+  const devices = [relayDevice("relay"), relayDevice("lamp")];
+
+  it("marks every device of the network offline when the bridge dies", () => {
+    const { send, statusUpdates } = makeParser();
+    send("z2m/bridge/state", { state: "online" });
+    send("z2m/bridge/devices", devices);
+    statusUpdates.length = 0;
+
+    send("z2m/bridge/state", { state: "offline" });
+
+    expect(statusUpdates).toEqual([
+      { name: "relay", status: "offline" },
+      { name: "lamp", status: "offline" },
+    ]);
+  });
+
+  it("does not claim devices are back before they say so", () => {
+    const { send, statusUpdates } = makeParser();
+    send("z2m/bridge/devices", devices);
+    send("z2m/bridge/state", { state: "offline" });
+    statusUpdates.length = 0;
+
+    send("z2m/bridge/state", { state: "online" });
+
+    // Z2M republishes cached states and availability on startup; those messages
+    // are what brings a device back, not the bridge coming up.
+    expect(statusUpdates).toEqual([]);
+  });
+
+  it("applies a bridge already down to devices discovered afterwards", () => {
+    // Both topics are retained, so bridge/state can land first on resubscribe.
+    const { send, statusUpdates } = makeParser();
+    send("z2m/bridge/state", { state: "offline" });
+    expect(statusUpdates).toEqual([]);
+
+    send("z2m/bridge/devices", devices);
+
+    expect(statusUpdates).toEqual([
+      { name: "relay", status: "offline" },
+      { name: "lamp", status: "offline" },
+    ]);
+  });
+
+  it("is independent of the availability feature being disabled", () => {
+    // The case that has no other offline signal at all.
+    const { send, statusUpdates } = makeParser();
+    send("z2m/bridge/info", { version: "2.4.0", config: { availability: { enabled: false } } });
+    send("z2m/bridge/devices", devices);
+    send("z2m/relay/availability", { state: "offline" });
+    expect(statusUpdates).toEqual([]);
+
+    send("z2m/bridge/state", { state: "offline" });
+
+    expect(statusUpdates).toEqual([
+      { name: "relay", status: "offline" },
+      { name: "lamp", status: "offline" },
+    ]);
+  });
+
+  it("ignores repeated states so a retained redelivery is not a status storm", () => {
+    const { send, statusUpdates } = makeParser();
+    send("z2m/bridge/devices", devices);
+    send("z2m/bridge/state", { state: "offline" });
+    statusUpdates.length = 0;
+
+    send("z2m/bridge/state", { state: "offline" });
+
+    expect(statusUpdates).toEqual([]);
+  });
+});
+
+describe("parseBridgeState", () => {
+  it("reads the Z2M 2.x object shape", () => {
+    expect(parseBridgeState('{"state":"offline"}')).toBe("offline");
+    expect(parseBridgeState('{"state":"online"}')).toBe("online");
+  });
+
+  it("reads the legacy 1.x bare string", () => {
+    expect(parseBridgeState("offline")).toBe("offline");
+    expect(parseBridgeState(" online ")).toBe("online");
+    expect(parseBridgeState('"offline"')).toBe("offline");
+  });
+
+  it("ignores anything it does not recognise", () => {
+    expect(parseBridgeState("")).toBeNull();
+    expect(parseBridgeState("{}")).toBeNull();
+    expect(parseBridgeState('{"state":"weird"}')).toBeNull();
   });
 });
 
