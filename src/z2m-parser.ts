@@ -58,6 +58,43 @@ const Z2M_TYPE_TO_DATA_TYPE: Record<string, DataType> = {
 const Z2M_ACCESS_STATE = 0b001;
 const Z2M_ACCESS_SET = 0b010;
 
+/** Keep only JSON primitives — value_on/value_off are untyped in the Z2M schema. */
+function wirePrimitive(v: unknown): string | number | boolean | undefined {
+  return typeof v === "string" || typeof v === "number" || typeof v === "boolean" ? v : undefined;
+}
+
+/**
+ * Whether Z2M's availability feature is enabled, across config shapes:
+ * Z2M 2.x: `config.availability.enabled` (boolean). Z2M 1.x legacy:
+ * `config.availability` as a boolean, or an object without `enabled`
+ * (object form meant enabled). Absent config → disabled.
+ */
+export function availabilityEnabledFromBridgeInfo(info: unknown): boolean {
+  if (typeof info !== "object" || info === null) return false;
+  const avail = (info as { config?: { availability?: unknown } }).config?.availability;
+  if (typeof avail === "boolean") return avail;
+  if (typeof avail === "object" && avail !== null) {
+    const enabled = (avail as { enabled?: unknown }).enabled;
+    return typeof enabled === "boolean" ? enabled : true;
+  }
+  return false;
+}
+
+/**
+ * Read `bridge/state`, which Z2M publishes as `{"state":"online"}` (2.x) and
+ * used to publish as the bare string `online` (1.x). The same shapes come back
+ * as the broker-delivered last will when the instance dies. Anything else is
+ * ignored rather than guessed.
+ */
+export function parseBridgeState(raw: string): "online" | "offline" | null {
+  let value: unknown = raw.trim();
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    value = typeof parsed === "object" && parsed !== null ? (parsed as { state?: unknown }).state : parsed;
+  } catch { /* bare string (Z2M 1.x) — keep the trimmed payload */ }
+  return value === "online" || value === "offline" ? value : null;
+}
+
 const PROPERTY_TO_CATEGORY: Record<string, DataCategory> = {
   occupancy: "motion", presence: "motion",
   temperature: "temperature", device_temperature: "temperature", soil_temperature: "temperature",
@@ -112,23 +149,57 @@ export function mapPowerSource(powerSource?: string): PowerSource {
   return "unknown";
 }
 
-export function inferCategory(property: string, allProperties: Set<string>, parentExposeType?: string): DataCategory {
+/**
+ * A relay / switch on-off channel: `state`, or an endpoint-suffixed
+ * `state_l1` / `state_left` / `state_right`, exposed as a `binary` (ON/OFF).
+ *
+ * The plain-`state`-under-a-`switch`-grouping check alone misses Tuya relay
+ * modules (e.g. WHD02) that expose the switch at the top level or per-endpoint
+ * — those land as category `generic` with no `light_toggle` order, so they
+ * cannot be bound to a light or switch equipment. Gating on `binary` keeps an
+ * enum `state` (cover OPEN/CLOSE/STOP, appliance run/pause) out.
+ */
+const RELAY_STATE_PROPERTY = /^state(_.+)?$/;
+function isRelayState(property: string, exposeType?: string): boolean {
+  return exposeType === "binary" && RELAY_STATE_PROPERTY.test(property);
+}
+
+export function inferCategory(
+  property: string,
+  allProperties: Set<string>,
+  parentExposeType?: string,
+  exposeType?: string,
+): DataCategory {
   if (property === "state") {
     if (parentExposeType === "light" || parentExposeType === "switch") return "light_state";
     const hasLightProperties = [...LIGHT_INDICATOR_PROPERTIES].some((p) => allProperties.has(p));
-    return hasLightProperties ? "light_state" : "generic";
+    if (hasLightProperties) return "light_state";
+    // A top-level binary `state` (no switch grouping) is a relay/switch.
+    if (exposeType === "binary") return "light_state";
+    return "generic";
   }
+  // Endpoint-suffixed relay channel (state_l1, state_left, ...).
+  if (isRelayState(property, exposeType)) return "light_state";
   return PROPERTY_TO_CATEGORY[property] ?? "generic";
 }
 
-function inferOrderCategory(property: string, allProperties: Set<string>, parentExposeType?: string): string | undefined {
+export function inferOrderCategory(
+  property: string,
+  allProperties: Set<string>,
+  parentExposeType?: string,
+  exposeType?: string,
+): string | undefined {
   if (property === "state") {
     if (parentExposeType === "cover") return "shutter_move";
     if (parentExposeType === "light" || parentExposeType === "switch") return "light_toggle";
     const hasLightProperties = [...LIGHT_INDICATOR_PROPERTIES].some((p) => allProperties.has(p));
     if (hasLightProperties) return "light_toggle";
+    // A top-level binary `state` (no switch grouping) is a relay on-off command.
+    if (exposeType === "binary") return "light_toggle";
     return undefined;
   }
+  // Endpoint-suffixed relay command (state_l1, state_left, ...).
+  if (isRelayState(property, exposeType)) return "light_toggle";
   return PROPERTY_TO_ORDER_CATEGORY[property];
 }
 
@@ -152,7 +223,11 @@ interface DiscoveredDevice {
   powerSource?: PowerSource;
   rawExpose?: unknown;
   data: { key: string; type: string; category: string; unit?: string; enumValues?: string[] }[];
-  orders: { key: string; type: string; category?: string; min?: number; max?: number; enumValues?: string[]; unit?: string }[];
+  orders: {
+    key: string; type: string; category?: string; min?: number; max?: number;
+    enumValues?: string[]; unit?: string;
+    valueOn?: string | number | boolean; valueOff?: string | number | boolean;
+  }[];
 }
 
 interface DeviceManager {
@@ -167,7 +242,9 @@ interface DeviceManager {
 interface Logger {
   child(bindings: Record<string, unknown>): Logger;
   info(obj: Record<string, unknown>, msg: string): void;
+  warn(obj: Record<string, unknown>, msg: string): void;
   error(obj: Record<string, unknown>, msg: string): void;
+  debug(obj: Record<string, unknown>, msg: string): void;
 }
 
 // ============================================================
@@ -199,6 +276,13 @@ export class Zigbee2MqttParser {
   private devicePrefix: string;
   /** Devices needing a bespoke multi-channel mapping (see pj1203a.ts). */
   private pj1203a: Pj1203aHandler;
+  /** null until bridge/info is seen; availability messages are queued meanwhile. */
+  private availabilityEnabled: boolean | null = null;
+  private pendingAvailability: { deviceName: string; status: "online" | "offline" }[] = [];
+  /** Sowel source ids owned by this network, from the last bridge/devices. */
+  private knownSourceIds = new Set<string>();
+  /** null until bridge/state is seen. */
+  private bridgeOnline: boolean | null = null;
 
   constructor(options: ParserOptions) {
     this.integrationId = options.integrationId;
@@ -226,11 +310,85 @@ export class Zigbee2MqttParser {
   }
 
   start(): void {
+    this.mqttConnector.subscribe(`${this.baseTopic}/bridge/state`, (_topic, payload) => { this.handleBridgeState(payload); });
+    this.mqttConnector.subscribe(`${this.baseTopic}/bridge/info`, (_topic, payload) => { this.handleBridgeInfo(payload); });
     this.mqttConnector.subscribe(`${this.baseTopic}/bridge/devices`, (_topic, payload) => { this.handleBridgeDevices(payload); });
     this.mqttConnector.subscribe(`${this.baseTopic}/bridge/event`, (_topic, payload) => { this.handleBridgeEvent(payload); });
     this.mqttConnector.subscribe(`${this.baseTopic}/+`, (topic, payload) => { this.handleDeviceState(topic, payload); });
     this.mqttConnector.subscribe(`${this.baseTopic}/+/availability`, (topic, payload) => { this.handleDeviceAvailability(topic, payload); });
     this.logger.info({ baseTopic: this.baseTopic }, "Zigbee2MQTT parser started");
+  }
+
+  /**
+   * Track the Z2M instance itself (`bridge/state`: retained, and the MQTT last
+   * will Z2M registers with the broker).
+   *
+   * A dead Z2M instance is invisible from the device topics alone: it stops
+   * publishing, its retained `<device>/availability` topics keep their last
+   * "online", and the plugin's own MQTT connection to the broker stays up — so
+   * every device of that network sits on a stale "online" for as long as the
+   * instance is down. `bridge/state` is the only signal that the whole network
+   * went away, so mirror it onto the devices it owns.
+   *
+   * This matters most on a multi-instance setup, where one dead coordinator
+   * leaves the integration "connected" and the rest of the home reporting
+   * normally, and on installs that keep Z2M's availability feature disabled,
+   * where nothing else can ever mark a device offline.
+   */
+  private handleBridgeState(payload: Buffer): void {
+    const state = parseBridgeState(payload.toString());
+    if (state === null) return;
+    const online = state === "online";
+    if (this.bridgeOnline === online) return;
+    const first = this.bridgeOnline === null;
+    this.bridgeOnline = online;
+
+    if (online) {
+      // Deliberately no mass "online" here: Z2M republishes its cached states
+      // on startup (and its availability topics when the feature is on), so
+      // devices come back as their own messages arrive. Declaring them up
+      // before hearing from them would restore the very lie this fixes.
+      if (!first) this.logger.info({}, "Zigbee2MQTT bridge back online");
+      return;
+    }
+    this.markAllOffline();
+  }
+
+  /** Mirror a down bridge onto every device it owns. */
+  private markAllOffline(): void {
+    this.logger.warn(
+      { devices: this.knownSourceIds.size },
+      "Zigbee2MQTT bridge offline — marking its devices offline",
+    );
+    for (const sourceDeviceId of this.knownSourceIds) {
+      this.deviceManager.updateDeviceStatus(this.integrationId, sourceDeviceId, "offline");
+    }
+  }
+
+  /**
+   * Track whether Z2M's availability feature is enabled (bridge/info, retained).
+   *
+   * When the feature is disabled, `<device>/availability` topics can only be
+   * stale retained leftovers from a time it was enabled — Z2M neither updates
+   * nor clears them on disable — and honoring them falsely marks working
+   * devices offline at every (re)subscribe. Availability messages that arrive
+   * before bridge/info are queued and replayed once the flag is known.
+   */
+  private handleBridgeInfo(payload: Buffer): void {
+    try {
+      const info = JSON.parse(payload.toString());
+      const enabled = availabilityEnabledFromBridgeInfo(info);
+      const previous = this.availabilityEnabled;
+      this.availabilityEnabled = enabled;
+      if (previous === null || previous !== enabled) {
+        this.logger.info({ enabled }, enabled
+          ? "Z2M availability feature enabled — availability topics honored"
+          : "Z2M availability feature disabled — availability topics ignored (stale retained)");
+      }
+      const pending = this.pendingAvailability;
+      this.pendingAvailability = [];
+      if (enabled) for (const p of pending) this.applyAvailability(p.deviceName, p.status);
+    } catch (err) { this.logger.error({ err } as Record<string, unknown>, "Failed to parse bridge/info"); }
   }
 
   private handleBridgeDevices(payload: Buffer): void {
@@ -258,7 +416,12 @@ export class Zigbee2MqttParser {
         if (parsed) this.deviceManager.upsertFromDiscovery(this.integrationId, "zigbee2mqtt", parsed);
       }
       this.pj1203a.retainOnly(pj1203aNames);
+      this.knownSourceIds = currentNames;
       this.registry.report(this.baseTopic, currentNames);
+      // Both topics are retained, so on (re)subscribe they can arrive in either
+      // order: a bridge already known to be down must still reach the devices
+      // discovered after it.
+      if (this.bridgeOnline === false) this.markAllOffline();
     } catch (err) { this.logger.error({ err } as Record<string, unknown>, "Failed to parse bridge/devices"); }
   }
 
@@ -302,13 +465,26 @@ export class Zigbee2MqttParser {
       try { const parsed = JSON.parse(raw); status = typeof parsed === "object" && parsed !== null ? parsed.state : raw; }
       catch { status = raw; }
       if (status === "online" || status === "offline") {
-        if (this.pj1203a.isKnown(deviceName)) {
-          this.pj1203a.handleAvailability(deviceName, status);
+        if (this.availabilityEnabled === null) {
+          // bridge/info not seen yet — queue instead of trusting blindly.
+          if (this.pendingAvailability.length < 512) this.pendingAvailability.push({ deviceName, status });
           return;
         }
-        this.deviceManager.updateDeviceStatus(this.integrationId, this.sourceId(deviceName), status);
+        if (!this.availabilityEnabled) {
+          this.logger.debug({ deviceName, status } as Record<string, unknown>, "Availability ignored (feature disabled in Z2M)");
+          return;
+        }
+        this.applyAvailability(deviceName, status);
       }
     } catch (err) { this.logger.error({ err, topic } as Record<string, unknown>, "Failed to parse availability"); }
+  }
+
+  private applyAvailability(deviceName: string, status: "online" | "offline"): void {
+    if (this.pj1203a.isKnown(deviceName)) {
+      this.pj1203a.handleAvailability(deviceName, status);
+      return;
+    }
+    this.deviceManager.updateDeviceStatus(this.integrationId, this.sourceId(deviceName), status);
   }
 
   private parseZ2MDevice(z2mDevice: Z2MDevice): DiscoveredDevice | null {
@@ -324,7 +500,12 @@ export class Zigbee2MqttParser {
       friendlyName: this.sourceId(z2mDevice.friendly_name),
       manufacturer: z2mDevice.definition?.vendor ?? z2mDevice.manufacturer,
       model: z2mDevice.definition?.model ?? z2mDevice.model_id,
-      powerSource: mapPowerSource(z2mDevice.power_source),
+      // Only an explicit Z2M declaration writes powerSource; an absent field
+      // stays undefined so core keeps the last known value (device-manager's
+      // `?? existing.power_source`) rather than clobbering it to "unknown".
+      powerSource: z2mDevice.power_source
+        ? mapPowerSource(z2mDevice.power_source)
+        : undefined,
       data, orders, rawExpose: exposes,
     };
   }
@@ -349,15 +530,21 @@ export class Zigbee2MqttParser {
       const dataType = Z2M_TYPE_TO_DATA_TYPE[expose.type] ?? "text";
 
       if (access & Z2M_ACCESS_STATE) {
-        const category = inferCategory(expose.property, allProperties, parentExposeType);
+        const category = inferCategory(expose.property, allProperties, parentExposeType, expose.type);
         data.push({ key: expose.property, type: dataType, category, unit: expose.unit, enumValues: expose.values });
       }
 
       if (access & Z2M_ACCESS_SET) {
-        const orderCat = inferOrderCategory(expose.property, allProperties, parentExposeType);
+        const orderCat = inferOrderCategory(expose.property, allProperties, parentExposeType, expose.type);
         orders.push({
           key: expose.property, type: dataType, category: orderCat,
           min: expose.value_min, max: expose.value_max, enumValues: expose.values, unit: expose.unit,
+          // Wire representations of a binary expose (usually "ON"/"OFF", but
+          // some devices use literal booleans or "LOCK"/"UNLOCK"). Core maps
+          // boolean order values onto them at dispatch (Sowel >= 1.34), so
+          // executeOrder stays a pass-through. Fixes silently dropped
+          // {"state": true} payloads (issue #4).
+          valueOn: wirePrimitive(expose.value_on), valueOff: wirePrimitive(expose.value_off),
         });
       }
     }

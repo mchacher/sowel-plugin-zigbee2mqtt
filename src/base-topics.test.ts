@@ -83,4 +83,28 @@ describe("resolveDevice", () => {
   it("falls back to the default topic when no network is configured", () => {
     expect(resolveDevice([], "salon")).toEqual({ baseTopic: "zigbee2mqtt", deviceName: "salon" });
   });
+
+  describe("with a discovery-recorded owner", () => {
+    it("routes an unprefixed id to its owning secondary network (`topic:` opt-out)", () => {
+      const optOut = parseBaseTopics("zigbee2mqtt, zigbee2mqtt_annexe:");
+      expect(resolveDevice(optOut, "salon", "zigbee2mqtt_annexe")).toEqual({
+        baseTopic: "zigbee2mqtt_annexe",
+        deviceName: "salon",
+      });
+    });
+
+    it("strips the owner's prefix", () => {
+      expect(resolveDevice(topics, "zigbee2mqtt_maison2/salon", "zigbee2mqtt_maison2")).toEqual({
+        baseTopic: "zigbee2mqtt_maison2",
+        deviceName: "salon",
+      });
+    });
+
+    it("ignores an owner that is no longer configured", () => {
+      expect(resolveDevice(topics, "salon", "zigbee2mqtt_disparu")).toEqual({
+        baseTopic: "zigbee2mqtt",
+        deviceName: "salon",
+      });
+    });
+  });
 });

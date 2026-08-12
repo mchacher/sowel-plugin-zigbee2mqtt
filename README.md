@@ -39,8 +39,8 @@ zigbee2mqtt, zigbee2mqtt_maison2, zigbee2mqtt_garage
   so two networks hosting the same friendly name stay two distinct Sowel devices.
 - An entry can override that prefix with `topic:prefix` (`zigbee2mqtt_maison2:m2` → `m2/salon`), or
   drop it entirely with a trailing colon (`zigbee2mqtt_maison2:` → `salon`). Dropping the prefix is
-  only safe when friendly names are unique across networks; on a collision the two devices silently
-  become one.
+  only safe when friendly names are unique across networks; on a collision the two devices merge
+  into one and a warning is logged.
 
 **Do not reorder the list** and do not change a prefix once devices exist: source ids are derived
 from it, so any change orphans the affected devices and drops their equipment bindings.
@@ -48,12 +48,17 @@ from it, so any change orphans the affected devices and drops their equipment bi
 Stale-device cleanup runs on the union of all networks and only once each of them has published its
 `bridge/devices`. A network whose Z2M instance is down therefore never gets its devices purged.
 
-Orders are routed back to the owning instance by stripping the prefix from the source id.
+Orders are routed back to the instance that discovered the device, as recorded from each network's
+`bridge/devices` (retained, so received right after connect). Until a network has reported, orders
+fall back to prefix-based routing — which is why an unprefixed id belongs to the primary by default.
 
 Two Zigbee networks in the same building should use **different Zigbee channels** (Z2M's
 `advanced.channel`); otherwise they share airtime and both degrade.
 
 ### Upgrading from ≤ 2.3.x
+
+Version 2.4.0 requires **Sowel >= 1.38.0** (`sowelVersion` in the manifest): older cores are not
+offered the update and refuse to install it.
 
 Up to 2.3.x the plugin passed the base topic where the core expects an integration id — which only
 worked because the default topic and the plugin id are both `zigbee2mqtt`. An install with a custom
