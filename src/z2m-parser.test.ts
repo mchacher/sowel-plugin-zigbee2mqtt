@@ -387,7 +387,16 @@ describe("mapPowerSource", () => {
 });
 
 describe("battery_low", () => {
-  it("is categorised battery so the low-battery monitor sees it (spec 143)", () => {
-    expect(inferCategory("battery_low", new Set(["battery_low", "occupancy"]))).toBe("battery");
+  it("is NOT categorised battery — it is a boolean, that category means a percentage", () => {
+    // v2.5.0 mapped it to "battery" for spec 143. Core then logs
+    // "Declared data type contradicts category contract" on every discovery
+    // (battery expects number, this is boolean), and its device list picks the
+    // first category === "battery" row, so a ZP01 showed the flag instead of a
+    // level. The monitor matches by key, so "generic" loses nothing.
+    expect(inferCategory("battery_low", new Set(["battery_low", "occupancy"]))).toBe("generic");
+  });
+
+  it("still leaves a real battery percentage on the battery category", () => {
+    expect(inferCategory("battery", new Set(["battery", "battery_low"]))).toBe("battery");
   });
 });

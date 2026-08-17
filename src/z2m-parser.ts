@@ -102,9 +102,12 @@ const PROPERTY_TO_CATEGORY: Record<string, DataCategory> = {
   pressure: "pressure",
   illuminance: "luminosity", illuminance_lux: "luminosity",
   battery: "battery",
-  // Sowel's low-battery monitor (spec 143) watches the battery category; this
-  // boolean is the only battery signal some sensors expose (e.g. ZP01).
-  battery_low: "battery",
+  // NOT "battery": that category's contract is a numeric percentage, and this
+  // is a boolean flag. Core's low-battery monitor (spec 143) matches it by key
+  // regardless of category — `isBatteryData` is `category === "battery" ||
+  // key === "battery_low"` — so the semantics are kept without lying about the
+  // type. See the regression note in the test file.
+  battery_low: "generic",
   voltage: "voltage", current: "current",
   power: "power", energy: "energy",
   co2: "co2", voc: "voc",
