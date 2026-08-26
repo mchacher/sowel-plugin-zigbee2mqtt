@@ -400,3 +400,80 @@ describe("battery_low", () => {
     expect(inferCategory("battery", new Set(["battery", "battery_low"]))).toBe("battery");
   });
 });
+
+// ============================================================
+// Wire literals on the reading side (#14)
+// ============================================================
+
+describe("data declarations carry value_on/value_off", () => {
+  const childLockExpose = {
+    type: "lock",
+    features: [
+      {
+        type: "binary",
+        property: "child_lock",
+        access: 7,
+        value_on: "LOCK",
+        value_off: "UNLOCK",
+      },
+    ],
+  };
+
+  it("forwards the pair so core can resolve LOCK/UNLOCK", () => {
+    // The plug reports child_lock: "UNLOCK" on a boolean-typed key. Without the
+    // pair, core cannot guess the polarity, flags it and stores the raw string.
+    const [device] = runDiscovery([
+      {
+        friendly_name: "prise",
+        ieee_address: "0xprise",
+        type: "Router",
+        supported: true,
+        definition: { model: "TS011F", vendor: "Tuya", exposes: [childLockExpose] },
+      },
+    ]);
+
+    const lock = device.data.find((d: { key: string }) => d.key === "child_lock");
+    expect(lock.type).toBe("boolean");
+    expect(lock.valueOn).toBe("LOCK");
+    expect(lock.valueOff).toBe("UNLOCK");
+  });
+
+  it("leaves a binary expose without declared literals untouched", () => {
+    const [device] = runDiscovery([
+      {
+        friendly_name: "relais",
+        ieee_address: "0xrelais",
+        type: "Router",
+        supported: true,
+        definition: {
+          model: "WHD02",
+          vendor: "Tuya",
+          exposes: [{ type: "binary", property: "state", access: 7 }],
+        },
+      },
+    ]);
+
+    const state = device.data.find((d: { key: string }) => d.key === "state");
+    expect(state.valueOn).toBeUndefined();
+    expect(state.valueOff).toBeUndefined();
+  });
+
+  it("declares the same pair on the data and on the order", () => {
+    // The two sides must not drift: one dispatches, the other ingests.
+    const [device] = runDiscovery([
+      {
+        friendly_name: "prise",
+        ieee_address: "0xprise",
+        type: "Router",
+        supported: true,
+        definition: { model: "TS011F", vendor: "Tuya", exposes: [childLockExpose] },
+      },
+    ]);
+
+    const data = device.data.find((d: { key: string }) => d.key === "child_lock");
+    const order = device.orders.find((o: { key: string }) => o.key === "child_lock");
+    expect(data.valueOn).toBe(order.valueOn);
+    expect(data.valueOff).toBe(order.valueOff);
+  });
+});
+
