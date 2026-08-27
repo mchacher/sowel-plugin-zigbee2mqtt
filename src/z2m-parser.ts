@@ -225,7 +225,10 @@ interface DiscoveredDevice {
   ieeeAddress?: string; friendlyName: string; manufacturer?: string; model?: string;
   powerSource?: PowerSource;
   rawExpose?: unknown;
-  data: { key: string; type: string; category: string; unit?: string; enumValues?: string[] }[];
+  data: {
+    key: string; type: string; category: string; unit?: string; enumValues?: string[];
+    valueOn?: string | number | boolean; valueOff?: string | number | boolean;
+  }[];
   orders: {
     key: string; type: string; category?: string; min?: number; max?: number;
     enumValues?: string[]; unit?: string;
@@ -534,7 +537,15 @@ export class Zigbee2MqttParser {
 
       if (access & Z2M_ACCESS_STATE) {
         const category = inferCategory(expose.property, allProperties, parentExposeType, expose.type);
-        data.push({ key: expose.property, type: dataType, category, unit: expose.unit, enumValues: expose.values });
+        data.push({
+          key: expose.property, type: dataType, category, unit: expose.unit, enumValues: expose.values,
+          // Same wire literals as the order below, on the reading side. Core
+          // coerces a boolean value onto them at ingestion (Sowel >= 1.56),
+          // so a binary expose whose vocabulary is not ON/OFF — child_lock's
+          // LOCK/UNLOCK, typically — no longer lands as a raw string in a
+          // column declared boolean. Ignored by older cores.
+          valueOn: wirePrimitive(expose.value_on), valueOff: wirePrimitive(expose.value_off),
+        });
       }
 
       if (access & Z2M_ACCESS_SET) {
