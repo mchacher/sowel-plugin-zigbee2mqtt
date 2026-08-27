@@ -7,7 +7,7 @@
   "icon": "Radio",
   "repo": "mchacher/sowel-plugin-zigbee2mqtt",
   "author": "mchacher",
-  "sowelVersion": ">=1.38.0",
+  "sowelVersion": ">=1.59.0",
   "settings": [
     {
       "key": "mqtt_url",
