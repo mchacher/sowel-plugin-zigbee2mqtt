@@ -477,3 +477,119 @@ describe("data declarations carry value_on/value_off", () => {
   });
 });
 
+
+// ============================================================
+// Cumulative energy counters (issue #17)
+// ============================================================
+
+/** Harness exposing both discovery and device-state, plus captured updates. */
+function makeEnergyParser(z2mDevices: unknown[]) {
+  const handlers = new Map<string, (topic: string, payload: Buffer) => void>();
+  const discovered: any[] = [];
+  const updates: { sid: string; payload: Record<string, unknown> }[] = [];
+  const mqtt = {
+    subscribe: (pattern: string, handler: (topic: string, payload: Buffer) => void) => {
+      handlers.set(pattern, handler);
+    },
+    publish: () => {},
+    isConnected: () => true,
+  };
+  const deviceManager = {
+    upsertFromDiscovery: (_id: string, _src: string, d: unknown) => discovered.push(d),
+    updateDeviceData: (_id: string, sid: string, payload: Record<string, unknown>) =>
+      updates.push({ sid, payload }),
+    updateDeviceStatus: () => {},
+    removeStaleDevices: () => {},
+    logSummary: () => {},
+  };
+  const logger = { child: () => logger, info: () => {}, warn: () => {}, error: () => {}, debug: () => {} } as any;
+  const parser = new Zigbee2MqttParser({
+    integrationId: "zigbee2mqtt",
+    baseTopic: "z2m",
+    devicePrefix: "",
+    mqttConnector: mqtt as any,
+    deviceManager: deviceManager as any,
+    registry: { report: () => {} } as any,
+    logger,
+  });
+  parser.start();
+  handlers.get("z2m/bridge/devices")!("z2m/bridge/devices", Buffer.from(JSON.stringify(z2mDevices)));
+  const state = (name: string, payload: unknown) =>
+    handlers.get("z2m/+")!(`z2m/${name}`, Buffer.from(JSON.stringify(payload)));
+  return { discovered, updates, state };
+}
+
+/** A metering plug as Z2M exposes one: cumulative `energy` in kWh. */
+const meteringPlug = {
+  friendly_name: "SONOFF_PLUG_00",
+  ieee_address: "0xa4c1",
+  type: "Router",
+  supported: true,
+  definition: {
+    model: "S60ZBTPF",
+    vendor: "SONOFF",
+    exposes: [
+      { type: "binary", property: "state", access: 7, value_on: "ON", value_off: "OFF" },
+      { type: "numeric", property: "power", access: 1, unit: "W" },
+      { type: "numeric", property: "energy", access: 1, unit: "kWh" },
+    ],
+  },
+};
+
+describe("cumulative energy counters (issue #17)", () => {
+  it("declares energy as a Wh delta and keeps the raw counter apart (AC5)", () => {
+    const { discovered } = makeEnergyParser([meteringPlug]);
+    const data = discovered[0].data as { key: string; category: string; unit?: string }[];
+
+    const energy = data.find((d) => d.key === "energy")!;
+    expect(energy.category).toBe("energy");
+    expect(energy.unit).toBe("Wh");
+
+    // The cumul is preserved, but NOT as category "energy" — otherwise it
+    // would be summed into every energy aggregation.
+    const total = data.find((d) => d.key === "energy_total")!;
+    expect(total.category).toBe("generic");
+    expect(total.unit).toBe("kWh");
+  });
+
+  it("converts the counter into a per-report Wh delta (AC1, AC2)", () => {
+    const { updates, state } = makeEnergyParser([meteringPlug]);
+
+    state("SONOFF_PLUG_00", { state: "ON", power: 23, energy: 0.02 });
+    expect(updates[0].payload.energy).toBe(0);          // anchor, no credit
+    expect(updates[0].payload.energy_total).toBe(0.02);
+
+    state("SONOFF_PLUG_00", { state: "ON", power: 23, energy: 0.03 });
+    expect(updates[1].payload.energy).toBe(10);         // 0.01 kWh = 10 Wh
+    expect(updates[1].payload.energy_total).toBe(0.03);
+
+    // Regression: a re-report of an unchanged counter used to add the whole
+    // counter again. It must now add nothing.
+    state("SONOFF_PLUG_00", { state: "ON", power: 23, energy: 0.03 });
+    expect(updates[2].payload.energy).toBe(0);
+  });
+
+  it("does not touch a PJ-1203A — it is dispatched before this path (AC6)", () => {
+    const pj = {
+      friendly_name: "pince",
+      ieee_address: "0xpj",
+      type: "Router",
+      supported: true,
+      definition: { model: "PJ-1203A", vendor: "Tuya", exposes: [] },
+    };
+    const { updates, state } = makeEnergyParser([pj]);
+    state("pince", { energy_a: 12.5, energy_produced_a: 0, power_a: 100 });
+
+    // The bespoke handler owns this device: it emits per-channel deltas under
+    // energy_forward/energy_reverse. A second conversion here would double it.
+    expect(updates.every((u) => !("energy_total" in u.payload))).toBe(true);
+    expect(updates.some((u) => u.sid !== "pince")).toBe(true);
+  });
+
+  it("leaves non-metering devices untouched", () => {
+    const { updates, state } = makeEnergyParser([relayDevice("relay")]);
+    state("relay", { state: "ON" });
+    expect(updates[0].payload).toEqual({ state: "ON" });
+    expect(updates[0].payload).not.toHaveProperty("energy_total");
+  });
+});

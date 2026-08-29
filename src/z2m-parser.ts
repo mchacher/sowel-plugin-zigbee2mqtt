@@ -6,6 +6,7 @@
 import type { MqttConnector } from "./mqtt-connector.js";
 import type { DiscoveryRegistry } from "./discovery-registry.js";
 import { Pj1203aHandler, isPj1203a } from "./pj1203a.js";
+import { EnergyCounterNormaliser, ENERGY_KEY, ENERGY_TOTAL_KEY } from "./energy-counter.js";
 
 // ============================================================
 // Z2M types
@@ -282,6 +283,8 @@ export class Zigbee2MqttParser {
   private devicePrefix: string;
   /** Devices needing a bespoke multi-channel mapping (see pj1203a.ts). */
   private pj1203a: Pj1203aHandler;
+  /** Cumulative Zigbee `energy` counters turned into Sowel Wh deltas (issue #17). */
+  private energyCounter: EnergyCounterNormaliser;
   /** null until bridge/info is seen; availability messages are queued meanwhile. */
   private availabilityEnabled: boolean | null = null;
   private pendingAvailability: { deviceName: string; status: "online" | "offline" }[] = [];
@@ -301,6 +304,11 @@ export class Zigbee2MqttParser {
     this.pj1203a = new Pj1203aHandler(
       options.integrationId,
       options.devicePrefix,
+      options.deviceManager,
+      this.logger,
+    );
+    this.energyCounter = new EnergyCounterNormaliser(
+      options.integrationId,
       options.deviceManager,
       this.logger,
     );
@@ -422,6 +430,7 @@ export class Zigbee2MqttParser {
         if (parsed) this.deviceManager.upsertFromDiscovery(this.integrationId, "zigbee2mqtt", parsed);
       }
       this.pj1203a.retainOnly(pj1203aNames);
+      this.energyCounter.retainOnly(currentNames);
       this.knownSourceIds = currentNames;
       this.registry.report(this.baseTopic, currentNames);
       // Both topics are retained, so on (re)subscribe they can arrive in either
@@ -452,10 +461,11 @@ export class Zigbee2MqttParser {
         this.pj1203a.handleState(rest, data as Record<string, unknown>);
         return;
       }
+      const sourceId = this.sourceId(rest);
       this.deviceManager.updateDeviceData(
         this.integrationId,
-        this.sourceId(rest),
-        data as Record<string, unknown>,
+        sourceId,
+        this.energyCounter.normalise(sourceId, data as Record<string, unknown>),
       );
     } catch { /* non-JSON ignored */ }
   }
@@ -499,6 +509,7 @@ export class Zigbee2MqttParser {
     const data: DiscoveredDevice["data"] = [];
     const orders: DiscoveredDevice["orders"] = [];
     this.flattenExposes(exposes, allProperties, data, orders, z2mDevice.friendly_name);
+    this.declareEnergyAsDelta(this.sourceId(z2mDevice.friendly_name), data);
     return {
       ieeeAddress: z2mDevice.ieee_address,
       // friendlyName drives sourceDeviceId in upsertFromDiscovery — prefixed so
@@ -514,6 +525,22 @@ export class Zigbee2MqttParser {
         : undefined,
       data, orders, rawExpose: exposes,
     };
+  }
+
+  /**
+   * Re-declare a cumulative `energy` expose as what core actually receives: a
+   * Wh delta. The raw counter keeps its own key, deliberately outside
+   * `category: "energy"` so it never reaches an energy aggregation.
+   * See energy-counter.ts for why Zigbee lets us assert this generically.
+   */
+  private declareEnergyAsDelta(sourceId: string, data: DiscoveredDevice["data"]): void {
+    const energy = data.find((d) => d.key === ENERGY_KEY);
+    if (!energy || energy.category !== "energy") return;
+
+    const rawUnit = energy.unit;
+    this.energyCounter.register(sourceId, rawUnit);
+    energy.unit = "Wh";
+    data.push({ key: ENERGY_TOTAL_KEY, type: "number", category: "generic", unit: rawUnit });
   }
 
   private flattenExposes(
