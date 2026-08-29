@@ -31,6 +31,8 @@ describe("EnergyCounterNormaliser", () => {
     dm = new FakeDeviceManager();
     logger = new FakeLogger();
     norm = new EnergyCounterNormaliser("zigbee2mqtt", dm, logger);
+    // Discovery normally does this; the unregistered case has its own test.
+    norm.register(SID, "kWh");
   });
 
   it("anchors on the first report without crediting the counter (AC2)", () => {
@@ -104,6 +106,30 @@ describe("EnergyCounterNormaliser", () => {
     expect(norm.normalise(SID, { energy: 0.3 }).energy).toBe(200);
   });
 
+  it("only anchors until discovery declared the device", () => {
+    // Retained state can beat bridge/devices. Guessing kWh would give a
+    // Wh-declared meter a 1000x credit, and `energy_total` would be undeclared
+    // so the baseline could never persist. Anchor instead.
+    const fresh = new EnergyCounterNormaliser("zigbee2mqtt", dm, logger);
+    const out = fresh.normalise("NEW", { energy: 4.2, power: 10 });
+    expect(out.energy).toBe(0);
+    expect(out).not.toHaveProperty("energy_total");
+
+    fresh.register("NEW", "kWh");
+    expect(fresh.normalise("NEW", { energy: 4.3 }).energy).toBe(100);
+  });
+
+  it("rejects an implausible jump instead of crediting a counter", () => {
+    // Regression on the fix itself: a spurious 0 used to re-anchor low, so the
+    // next report credited the whole counter in one minute bucket.
+    norm.normalise(SID, { energy: 100 });
+    expect(norm.normalise(SID, { energy: 0 }).energy).toBe(0);
+    expect(norm.normalise(SID, { energy: 100.01 }).energy).toBe(0);
+    expect(logger.warns.length).toBeGreaterThanOrEqual(2);
+    // Once re-anchored high, normal deltas resume.
+    expect(norm.normalise(SID, { energy: 100.02 }).energy).toBe(10);
+  });
+
   it("forgets devices that left the network", () => {
     norm.normalise(SID, { energy: 5 });
     norm.retainOnly(new Set(["OTHER"]));
@@ -112,6 +138,8 @@ describe("EnergyCounterNormaliser", () => {
   });
 
   it("keeps baselines independent per device", () => {
+    norm.register("A", "kWh");
+    norm.register("B", "kWh");
     norm.normalise("A", { energy: 1 });
     norm.normalise("B", { energy: 50 });
     expect(norm.normalise("A", { energy: 1.5 }).energy).toBe(500);

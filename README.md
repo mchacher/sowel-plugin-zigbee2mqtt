@@ -77,6 +77,31 @@ Two things feed Sowel's low-battery monitoring (core spec 143):
 
 Older Sowel cores ignore the extra field, so the plugin stays compatible with them.
 
+## Energy: counters become deltas
+
+Zigbee's Metering cluster defines `currentSummDelivered` as a **summation**, so Zigbee2MQTT
+publishes `energy` as a monotonically growing kWh counter. Sowel's `energy` alias is the opposite:
+an **additive Wh delta since the previous report**. Handing the counter over untouched makes Sowel
+add the whole meter reading on every message — cumuls sit flat at 0 while the counter reads 0, then
+turn absurd once it moves.
+
+Since **2.7.0** the plugin converts this on the generic path, for every metering device:
+
+| Key            | Unit | Category  | Meaning                                          |
+| -------------- | ---- | --------- | ------------------------------------------------ |
+| `energy`       | Wh   | `energy`  | Delta since the previous report — bind this one   |
+| `energy_total` | kWh  | `generic` | The device's raw counter, for display only        |
+
+`energy_total` is deliberately **not** `category: "energy"`: a cumul carrying that category would be
+summed into every energy aggregation. It also persists the baseline, so a Sowel restart credits the
+energy consumed while it was down once, instead of the whole counter.
+
+The first report after pairing emits `0` and anchors the baseline. A counter reset, or any jump
+above 10 kWh in a single report, re-anchors and emits `0` rather than crediting a spike.
+
+Devices reporting only `power` and no `energy` are untouched: Sowel's own `PowerSubmeterIntegrator`
+derives their energy.
+
 ## Tuya PJ-1203A — bidirectional dual-channel energy meter
 
 This meter gets a dedicated mapping (`src/pj1203a.ts`), because the generic flattening cannot feed

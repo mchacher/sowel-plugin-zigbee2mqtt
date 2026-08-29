@@ -48,6 +48,16 @@ const DEFAULT_MULTIPLIER = UNIT_TO_WH.kwh;
 /** Wh precision kept on the emitted delta — 1 mWh, well under any meter's. */
 const WH_PRECISION = 1000;
 
+/**
+ * Largest delta credited from a single report. A backwards counter step
+ * (device glitch, re-interview, a failed read surfacing as 0) would otherwise
+ * re-anchor low and make the NEXT report credit the whole counter — the very
+ * bug this module exists to prevent. Generous enough to keep a legitimate
+ * catch-up after downtime (10 kWh is days of a fridge), tight enough that a
+ * counter-sized jump is rejected.
+ */
+const MAX_DELTA_WH = 10_000;
+
 export class EnergyCounterNormaliser {
   private readonly integrationId: string;
   private readonly deviceManager: DeviceManager;
@@ -94,6 +104,14 @@ export class EnergyCounterNormaliser {
     const raw = payload[ENERGY_KEY];
     if (typeof raw !== "number" || !Number.isFinite(raw)) return payload;
 
+    // Until discovery has declared this device, its unit is unknown and
+    // `energy_total` is undeclared (core would drop it, so the baseline could
+    // never persist). Anchor silently rather than guess kWh or leak the cumul.
+    if (!this.multipliers.has(sourceId)) {
+      this.baselines.set(sourceId, raw);
+      return { ...payload, [ENERGY_KEY]: 0 };
+    }
+
     const baseline = this.ensureBaseline(sourceId);
     const multiplier = this.multipliers.get(sourceId) ?? DEFAULT_MULTIPLIER;
     const out: Record<string, unknown> = { ...payload, [ENERGY_TOTAL_KEY]: raw };
@@ -111,7 +129,15 @@ export class EnergyCounterNormaliser {
         );
       }
       const deltaWh = Math.max(0, raw - baseline) * multiplier;
-      out[ENERGY_KEY] = Math.round(deltaWh * WH_PRECISION) / WH_PRECISION;
+      if (deltaWh > MAX_DELTA_WH) {
+        this.logger.warn(
+          { sourceId, previous: baseline, current: raw, deltaWh },
+          "Implausible energy jump — re-anchoring, emitting 0",
+        );
+        out[ENERGY_KEY] = 0;
+      } else {
+        out[ENERGY_KEY] = Math.round(deltaWh * WH_PRECISION) / WH_PRECISION;
+      }
     }
 
     this.baselines.set(sourceId, raw);

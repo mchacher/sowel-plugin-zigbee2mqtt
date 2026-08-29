@@ -537,6 +537,10 @@ export class Zigbee2MqttParser {
     const energy = data.find((d) => d.key === ENERGY_KEY);
     if (!energy || energy.category !== "energy") return;
 
+    // A device already publishing its own `energy_total` would collide on the
+    // declaration and on the payload key: leave it entirely alone.
+    if (data.some((d) => d.key === ENERGY_TOTAL_KEY)) return;
+
     const rawUnit = energy.unit;
     this.energyCounter.register(sourceId, rawUnit);
     energy.unit = "Wh";
