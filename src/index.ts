@@ -121,6 +121,10 @@ class Zigbee2MqttPlugin implements IntegrationPlugin {
         mqttUrl,
         { username: mqttUsername, password: mqttPassword, clientId: mqttClientId },
         this.eventBus, this.logger, INTEGRATION_ID,
+        // Keeps `this.status` in sync with the real socket state for the
+        // whole lifetime of the plugin, not just a one-shot snapshot taken
+        // before the connection may even be established (see #19).
+        (connected) => { this.status = connected ? "connected" : "disconnected"; },
       );
       await this.mqttConnector.connect();
 
@@ -146,10 +150,10 @@ class Zigbee2MqttPlugin implements IntegrationPlugin {
         }).start();
       }
 
+      // Best-effort snapshot for the log line below — the connector's
+      // onStatusChange callback above is the source of truth from here on
+      // and will correct this if the broker wasn't reachable yet.
       this.status = this.mqttConnector.isConnected() ? "connected" : "disconnected";
-      if (this.status === "connected") {
-        this.eventBus.emit({ type: "system.integration.connected", integrationId: this.id });
-      }
       this.logger.info(
         { networks: this.topics.map((t) => t.baseTopic) } as Record<string, unknown>,
         "Zigbee2MQTT started",
