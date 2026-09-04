@@ -6,6 +6,11 @@
 import mqtt, { type MqttClient, type IClientOptions } from "mqtt";
 
 export type MessageHandler = (topic: string, payload: Buffer) => void;
+/** Called every time the live connection state changes — both up and down,
+ * not just once at startup. Lets the caller keep its own status field in
+ * sync with the actual socket instead of freezing a snapshot taken before
+ * the connection is even established (see mchacher/sowel-plugin-zigbee2mqtt#19). */
+export type StatusHandler = (connected: boolean) => void;
 
 interface Logger {
   info(obj: Record<string, unknown>, msg: string): void;
@@ -23,6 +28,7 @@ export class MqttConnector {
   private url: string;
   private options: IClientOptions;
   private handlers: Map<string, MessageHandler[]> = new Map();
+  private onStatusChange?: StatusHandler;
 
   constructor(
     url: string,
@@ -30,12 +36,14 @@ export class MqttConnector {
     eventBus: EventBus,
     logger: Logger,
     integrationId: string,
+    onStatusChange?: StatusHandler,
   ) {
     this.url = url;
     this.options = { clientId: options.clientId, username: options.username, password: options.password, clean: true, reconnectPeriod: 5000 };
     this.eventBus = eventBus;
     this.logger = logger;
     this.integrationId = integrationId;
+    this.onStatusChange = onStatusChange;
   }
 
   async connect(): Promise<void> {
@@ -48,6 +56,13 @@ export class MqttConnector {
       this.client.on("connect", () => {
         this.logger.info({ url: this.url }, "MQTT connected");
         this.eventBus.emit({ type: "system.integration.connected", integrationId: this.integrationId });
+        // Re-subscribe every registered pattern on every (re)connect — a
+        // subscribe() call made while offline (e.g. broker not up yet at
+        // boot) never reaches the broker, and mqtt.js does not retry it on
+        // its own. Without this, the socket can report "connected" while
+        // no topic is actually being listened to.
+        this.resubscribeAll();
+        this.onStatusChange?.(true);
         doResolve();
       });
 
@@ -56,11 +71,13 @@ export class MqttConnector {
       this.client.on("disconnect", () => {
         this.logger.warn({ url: this.url }, "MQTT disconnected");
         this.eventBus.emit({ type: "system.integration.disconnected", integrationId: this.integrationId });
+        this.onStatusChange?.(false);
       });
 
       this.client.on("offline", () => {
         this.logger.warn({ url: this.url }, "MQTT offline");
         this.eventBus.emit({ type: "system.integration.disconnected", integrationId: this.integrationId });
+        this.onStatusChange?.(false);
       });
 
       this.client.on("error", (err) => {
@@ -82,7 +99,21 @@ export class MqttConnector {
   subscribe(topicPattern: string, handler: MessageHandler): void {
     if (!this.handlers.has(topicPattern)) this.handlers.set(topicPattern, []);
     this.handlers.get(topicPattern)!.push(handler);
-    if (this.client) {
+    // Only issue the live subscribe when the socket is actually connected —
+    // calling client.subscribe() while offline fails with "Connection
+    // closed" and is never retried by mqtt.js itself. If we're not
+    // connected yet (or not anymore), resubscribeAll() picks this pattern
+    // up the next time the "connect" event genuinely fires.
+    if (this.client?.connected) {
+      this.client.subscribe(topicPattern, (err) => {
+        if (err) this.logger.error({ err, topic: topicPattern } as Record<string, unknown>, "Subscribe error");
+      });
+    }
+  }
+
+  private resubscribeAll(): void {
+    if (!this.client) return;
+    for (const topicPattern of this.handlers.keys()) {
       this.client.subscribe(topicPattern, (err) => {
         if (err) this.logger.error({ err, topic: topicPattern } as Record<string, unknown>, "Subscribe error");
       });
