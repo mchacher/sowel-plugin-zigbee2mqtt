@@ -117,15 +117,22 @@ class Zigbee2MqttPlugin implements IntegrationPlugin {
     try {
       this.reclaimLegacyDevices();
 
-      this.mqttConnector = new MqttConnector(
+      const connector = new MqttConnector(
         mqttUrl,
         { username: mqttUsername, password: mqttPassword, clientId: mqttClientId },
         this.eventBus, this.logger, INTEGRATION_ID,
         // Keeps `this.status` in sync with the real socket state for the
         // whole lifetime of the plugin, not just a one-shot snapshot taken
         // before the connection may even be established (see #19).
-        (connected) => { this.status = connected ? "connected" : "disconnected"; },
+        // Ignore a connector this plugin no longer owns (a stop/start cycle
+        // leaves the old client emitting for a while), and never resurrect a
+        // start() that failed.
+        (connected) => {
+          if (this.mqttConnector !== connector || this.status === "error") return;
+          this.status = connected ? "connected" : "disconnected";
+        },
       );
+      this.mqttConnector = connector;
       await this.mqttConnector.connect();
 
       // Zigbee2MQTT drives one coordinator per instance, so each network is a
