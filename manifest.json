@@ -2,7 +2,7 @@
   "id": "zigbee2mqtt",
   "type": "integration",
   "name": "Zigbee2MQTT",
-  "version": "2.7.0",
+  "version": "2.7.1",
   "description": "Zigbee devices via Zigbee2MQTT MQTT bridge (multi-coordinator)",
   "icon": "Radio",
   "repo": "mchacher/sowel-plugin-zigbee2mqtt",
