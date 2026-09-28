@@ -118,9 +118,14 @@ const PROPERTY_TO_CATEGORY: Record<string, DataCategory> = {
   // Default to door; can be re-categorised to contact_window per device.
   contact: "contact_door",
   state: "light_state",
-  brightness: "light_brightness", color_temp: "light_brightness",
+  // color_temp is its own category: under light_brightness a bulb exposing
+  // both landed two readings on the alias `brightness` (sowel#931).
+  brightness: "light_brightness", color_temp: "light_color_temp",
   position: "shutter_position",
   rain: "rain", wind: "wind", noise: "noise",
+  // The core's leak/smoke alarms and zone folds key on these categories;
+  // under "generic" a leak sensor could never raise its alarm (sowel#931).
+  water_leak: "water_leak", smoke: "smoke",
 };
 
 const PROPERTY_TO_ORDER_CATEGORY: Record<string, string> = {
