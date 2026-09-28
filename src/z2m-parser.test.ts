@@ -402,10 +402,6 @@ describe("battery_low", () => {
 });
 
 // ============================================================
-// Wire literals on the reading side (#14)
-// ============================================================
-
-// ============================================================
 // Categories the core acts on (sowel#931)
 // ============================================================
 
@@ -484,6 +480,10 @@ describe("discovery declares the categories the core acts on (sowel#931)", () =>
     expect(category("state")).toBe("light_state");
   });
 });
+
+// ============================================================
+// Wire literals on the reading side (#14)
+// ============================================================
 
 describe("data declarations carry value_on/value_off", () => {
   const childLockExpose = {
