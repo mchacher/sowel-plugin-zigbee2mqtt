@@ -15,6 +15,19 @@ describe("inferCategory", () => {
     expect(inferCategory("linkquality", new Set(["linkquality"]))).toBe("generic");
   });
 
+  it("gives leak and smoke detectors the categories the core alarms on (sowel#931)", () => {
+    expect(inferCategory("water_leak", new Set(["water_leak", "battery"]))).toBe("water_leak");
+    expect(inferCategory("smoke", new Set(["smoke", "battery"]))).toBe("smoke");
+  });
+
+  it("keeps colour temperature and colour apart from brightness (sowel#931)", () => {
+    const bulb = new Set(["state", "brightness", "color_temp", "color_xy"]);
+    expect(inferCategory("brightness", bulb)).toBe("light_brightness");
+    expect(inferCategory("color_temp", bulb)).toBe("light_color_temp");
+    expect(inferCategory("color_xy", bulb)).toBe("light_color");
+    expect(inferCategory("color", bulb)).toBe("light_color");
+  });
+
   it("resolves `state` by context", () => {
     expect(inferCategory("state", new Set(["state"]), "switch")).toBe("light_state");
     expect(inferCategory("state", new Set(["state", "brightness"]))).toBe("light_state");
