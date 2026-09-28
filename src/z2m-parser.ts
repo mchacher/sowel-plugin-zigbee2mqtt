@@ -121,7 +121,6 @@ const PROPERTY_TO_CATEGORY: Record<string, DataCategory> = {
   // color_temp is its own category: under light_brightness a bulb exposing
   // both landed two readings on the alias `brightness` (sowel#931).
   brightness: "light_brightness", color_temp: "light_color_temp",
-  color: "light_color", color_xy: "light_color", color_hs: "light_color",
   position: "shutter_position",
   rain: "rain", wind: "wind", noise: "noise",
   // The core's leak/smoke alarms and zone folds key on these categories;
