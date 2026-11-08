@@ -469,6 +469,10 @@ export class Zigbee2MqttParser {
       if (event.type === "device_joined" || event.type === "device_announce" || event.type === "device_interview") {
         this.logger.info({ eventType: event.type, data: event.data }, "Bridge event");
       }
+      // A battery device announces itself when its cell is swapped (issue #23).
+      if (event.type === "device_announce" && typeof event.data?.friendly_name === "string") {
+        this.batteryRefresh.rejoined(event.data.friendly_name);
+      }
     } catch (err) { this.logger.error({ err } as Record<string, unknown>, "Failed to parse bridge/event"); }
   }
 

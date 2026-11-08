@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import {
   BatteryRefresher,
   BATTERY_READ_PAYLOAD,
@@ -176,6 +176,45 @@ describe("BatteryRefresher", () => {
     expect(reads).toEqual(["pir", "pir"]);
   });
 
+  it("reads a device again on its next wake-up after it re-announces (battery swap)", () => {
+    const { refresher, reads, advance } = makeRefresher(24);
+    refresher.learn([pir("pir")]);
+    refresher.onWake("pir");
+    advance(10 * 60_000);
+    refresher.onWake("pir");
+    expect(reads).toEqual(["pir"]);
+
+    refresher.rejoined("pir");
+    refresher.onWake("pir");
+    expect(reads).toEqual(["pir", "pir"]);
+  });
+
+  it("honours one re-announce per interval, so a chatty device is not read on every wake-up", () => {
+    const { refresher, reads, advance } = makeRefresher(24);
+    refresher.learn([pir("pir")]);
+    refresher.onWake("pir");
+    refresher.rejoined("pir");
+    // Three announces in a row, as seen on prod during one swap.
+    refresher.rejoined("pir");
+    refresher.rejoined("pir");
+    advance(MIN_SPACING_MS);
+    refresher.onWake("pir");
+    expect(reads).toEqual(["pir", "pir"]);
+    // The answer: without it the unanswered-read retry would fire after an hour.
+    advance(1_000);
+    refresher.onWake("pir");
+
+    advance(HOUR);
+    refresher.rejoined("pir");
+    refresher.onWake("pir");
+    expect(reads).toEqual(["pir", "pir"]);
+
+    advance(24 * HOUR);
+    refresher.rejoined("pir");
+    refresher.onWake("pir");
+    expect(reads).toEqual(["pir", "pir", "pir"]);
+  });
+
   it("does not use up the slot when the read could not be published", () => {
     const { refresher, reads, setConnected } = makeRefresher();
     refresher.learn([pir("pir")]);
@@ -188,6 +227,8 @@ describe("BatteryRefresher", () => {
 });
 
 describe("parser wiring (issue #23)", () => {
+  afterEach(() => { vi.useRealTimers(); });
+
   function makeParser(baseTopic: string, devicePrefix: string, batteryRefreshHours?: number) {
     const handlers = new Map<string, (topic: string, payload: Buffer) => void>();
     const published: { topic: string; payload: string }[] = [];
@@ -253,5 +294,21 @@ describe("parser wiring (issue #23)", () => {
     send("zigbee2mqtt/bridge/state", { state: "online" });
     send("zigbee2mqtt/Tuya_PIR_07", { occupancy: false });
     expect(published).toEqual([]);
+  });
+
+  it("reads again after a device_announce on bridge/event, on a secondary network too", () => {
+    vi.useFakeTimers();
+    const { send, published } = makeParser("zigbee2mqtt_m2", "m2/");
+    send("zigbee2mqtt_m2/Tuya_PIR_07", { occupancy: true });
+    vi.advanceTimersByTime(MIN_SPACING_MS);
+    send("zigbee2mqtt_m2/Tuya_PIR_07", { occupancy: false });
+    expect(published).toHaveLength(1);
+
+    send("zigbee2mqtt_m2/bridge/event", {
+      type: "device_announce",
+      data: { friendly_name: "Tuya_PIR_07", ieee_address: "0xa4c1" },
+    });
+    send("zigbee2mqtt_m2/Tuya_PIR_07", { occupancy: true });
+    expect(published).toHaveLength(2);
   });
 });
