@@ -97,6 +97,8 @@ export class BatteryRefresher {
   private readonly lastRead = new Map<string, number>();
   /** Reads sent and not answered yet: friendly name → time sent. */
   private readonly pending = new Map<string, number>();
+  /** Friendly name → time a re-announce last cleared its read. */
+  private readonly lastReset = new Map<string, number>();
   private lastSentAt = -Infinity;
   private quietUntil = -Infinity;
 
@@ -118,10 +120,9 @@ export class BatteryRefresher {
   learn(devices: PowerCfgDevice[]): void {
     const previous = this.eligible.size;
     this.eligible = new Set(devices.filter(reportsPowerCfg).map((d) => d.friendly_name));
-    for (const name of [...this.lastRead.keys()]) {
-      if (!this.eligible.has(name)) {
-        this.lastRead.delete(name);
-        this.pending.delete(name);
+    for (const map of [this.lastRead, this.pending, this.lastReset]) {
+      for (const name of [...map.keys()]) {
+        if (!this.eligible.has(name)) map.delete(name);
       }
     }
     // bridge/devices is republished on every rename or join: log changes only.
@@ -141,7 +142,15 @@ export class BatteryRefresher {
    * next message reads the new cell instead of waiting out the interval.
    */
   rejoined(friendlyName: string): void {
-    if (!this.lastRead.delete(friendlyName)) return;
+    if (!this.lastRead.has(friendlyName)) return;
+    // Some end devices re-announce on every parent change, near the edge of
+    // range. Honouring each one would read on almost every wake-up and drain
+    // the cell being watched: one reset per interval is plenty for a swap.
+    const now = this.now();
+    const previous = this.lastReset.get(friendlyName);
+    if (previous !== undefined && now - previous < this.intervalMs) return;
+    this.lastReset.set(friendlyName, now);
+    this.lastRead.delete(friendlyName);
     this.pending.delete(friendlyName);
     this.logger.debug({ device: friendlyName }, "Device re-announced, battery read due on next wake-up");
   }

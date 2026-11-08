@@ -189,6 +189,29 @@ describe("BatteryRefresher", () => {
     expect(reads).toEqual(["pir", "pir"]);
   });
 
+  it("honours one re-announce per interval, so a chatty device is not read on every wake-up", () => {
+    const { refresher, reads, advance } = makeRefresher(24);
+    refresher.learn([pir("pir")]);
+    refresher.onWake("pir");
+    refresher.rejoined("pir");
+    // Three announces in a row, as seen on prod during one swap.
+    refresher.rejoined("pir");
+    refresher.rejoined("pir");
+    advance(MIN_SPACING_MS);
+    refresher.onWake("pir");
+    expect(reads).toEqual(["pir", "pir"]);
+
+    advance(HOUR);
+    refresher.rejoined("pir");
+    refresher.onWake("pir");
+    expect(reads).toEqual(["pir", "pir"]);
+
+    advance(24 * HOUR);
+    refresher.rejoined("pir");
+    refresher.onWake("pir");
+    expect(reads).toEqual(["pir", "pir", "pir"]);
+  });
+
   it("does not use up the slot when the read could not be published", () => {
     const { refresher, reads, setConnected } = makeRefresher();
     refresher.learn([pir("pir")]);
@@ -201,6 +224,8 @@ describe("BatteryRefresher", () => {
 });
 
 describe("parser wiring (issue #23)", () => {
+  afterEach(() => { vi.useRealTimers(); });
+
   function makeParser(baseTopic: string, devicePrefix: string, batteryRefreshHours?: number) {
     const handlers = new Map<string, (topic: string, payload: Buffer) => void>();
     const published: { topic: string; payload: string }[] = [];
@@ -268,21 +293,19 @@ describe("parser wiring (issue #23)", () => {
     expect(published).toEqual([]);
   });
 
-  afterEach(() => { vi.useRealTimers(); });
-
-  it("reads again after a device_announce on bridge/event", () => {
+  it("reads again after a device_announce on bridge/event, on a secondary network too", () => {
     vi.useFakeTimers();
-    const { send, published } = makeParser("zigbee2mqtt", "");
-    send("zigbee2mqtt/Tuya_PIR_07", { occupancy: true });
+    const { send, published } = makeParser("zigbee2mqtt_m2", "m2/");
+    send("zigbee2mqtt_m2/Tuya_PIR_07", { occupancy: true });
     vi.advanceTimersByTime(MIN_SPACING_MS);
-    send("zigbee2mqtt/Tuya_PIR_07", { occupancy: false });
+    send("zigbee2mqtt_m2/Tuya_PIR_07", { occupancy: false });
     expect(published).toHaveLength(1);
 
-    send("zigbee2mqtt/bridge/event", {
+    send("zigbee2mqtt_m2/bridge/event", {
       type: "device_announce",
       data: { friendly_name: "Tuya_PIR_07", ieee_address: "0xa4c1" },
     });
-    send("zigbee2mqtt/Tuya_PIR_07", { occupancy: true });
+    send("zigbee2mqtt_m2/Tuya_PIR_07", { occupancy: true });
     expect(published).toHaveLength(2);
   });
 });
