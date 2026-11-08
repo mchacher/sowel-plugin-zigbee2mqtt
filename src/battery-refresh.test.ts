@@ -200,6 +200,9 @@ describe("BatteryRefresher", () => {
     advance(MIN_SPACING_MS);
     refresher.onWake("pir");
     expect(reads).toEqual(["pir", "pir"]);
+    // The answer: without it the unanswered-read retry would fire after an hour.
+    advance(1_000);
+    refresher.onWake("pir");
 
     advance(HOUR);
     refresher.rejoined("pir");
