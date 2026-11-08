@@ -78,7 +78,7 @@ function runDiscovery(z2mDevices: unknown[]): any[] {
     subscribe: (pattern: string, handler: (topic: string, payload: Buffer) => void) => {
       handlers.set(pattern, handler);
     },
-    publish: () => {},
+    publish: () => true,
     isConnected: () => true,
   };
   const discovered: any[] = [];
@@ -165,7 +165,7 @@ function makeParser() {
     subscribe: (pattern: string, handler: (topic: string, payload: Buffer) => void) => {
       handlers.set(pattern, handler);
     },
-    publish: () => {},
+    publish: () => true,
     isConnected: () => true,
   };
   const deviceManager = {
@@ -571,7 +571,7 @@ function makeEnergyParser(z2mDevices: unknown[]) {
     subscribe: (pattern: string, handler: (topic: string, payload: Buffer) => void) => {
       handlers.set(pattern, handler);
     },
-    publish: () => {},
+    publish: () => true,
     isConnected: () => true,
   };
   const deviceManager = {

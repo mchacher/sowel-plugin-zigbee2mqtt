@@ -45,7 +45,7 @@
     },
     {
       "key": "battery_refresh_hours",
-      "label": "Battery refresh interval (hours, 0 = off)",
+      "label": "Battery refresh interval (hours, min 1, 0 = off)",
       "type": "number",
       "required": false,
       "defaultValue": "24"

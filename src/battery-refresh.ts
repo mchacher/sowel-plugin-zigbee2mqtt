@@ -158,6 +158,8 @@ export class BatteryRefresher {
    * The first message after a read tells whether it was answered: inside the
    * window it is the answer; later, the device was asleep when the read went
    * out, so the next attempt comes after the backoff, not a whole interval.
+   * A heuristic: any message counts, so a second message of the same wake-up
+   * passes for the answer, and a `debounce` past the window for a miss.
    */
   private settlePending(friendlyName: string, now: number): void {
     const sentAt = this.pending.get(friendlyName);

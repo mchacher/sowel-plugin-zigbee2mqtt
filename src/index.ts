@@ -100,7 +100,7 @@ class Zigbee2MqttPlugin implements IntegrationPlugin {
       { key: "mqtt_password", label: "MQTT Password", type: "password", required: false },
       { key: "mqtt_client_id", label: "MQTT Client ID", type: "text", required: false, defaultValue: "sowel-z2m" },
       { key: "base_topic", label: "Zigbee2MQTT Base Topic(s)", type: "text", required: false, defaultValue: "zigbee2mqtt", placeholder: "zigbee2mqtt, zigbee2mqtt_maison2" },
-      { key: "battery_refresh_hours", label: "Battery refresh interval (hours, 0 = off)", type: "number", required: false, defaultValue: "24" },
+      { key: "battery_refresh_hours", label: "Battery refresh interval (hours, min 1, 0 = off)", type: "number", required: false, defaultValue: "24" },
     ];
   }
 
