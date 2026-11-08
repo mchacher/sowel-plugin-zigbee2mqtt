@@ -2,7 +2,7 @@
   "id": "zigbee2mqtt",
   "type": "integration",
   "name": "Zigbee2MQTT",
-  "version": "2.7.2",
+  "version": "2.8.0",
   "description": "Zigbee devices via Zigbee2MQTT MQTT bridge (multi-coordinator)",
   "icon": "Radio",
   "repo": "mchacher/sowel-plugin-zigbee2mqtt",
@@ -42,6 +42,13 @@
       "required": false,
       "defaultValue": "zigbee2mqtt",
       "placeholder": "zigbee2mqtt, zigbee2mqtt_maison2"
+    },
+    {
+      "key": "battery_refresh_hours",
+      "label": "Battery refresh interval (hours, 0 = off)",
+      "type": "number",
+      "required": false,
+      "defaultValue": "24"
     }
   ],
   "apiVersion": 2

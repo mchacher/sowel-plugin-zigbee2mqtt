@@ -10,6 +10,7 @@ import { MqttConnector } from "./mqtt-connector.js";
 import { Zigbee2MqttParser } from "./z2m-parser.js";
 import { DiscoveryRegistry } from "./discovery-registry.js";
 import { parseBaseTopics, resolveDevice, type TopicConfig } from "./base-topics.js";
+import { parseRefreshHours } from "./battery-refresh.js";
 
 // ============================================================
 // Local type definitions (no imports from Sowel source)
@@ -99,6 +100,7 @@ class Zigbee2MqttPlugin implements IntegrationPlugin {
       { key: "mqtt_password", label: "MQTT Password", type: "password", required: false },
       { key: "mqtt_client_id", label: "MQTT Client ID", type: "text", required: false, defaultValue: "sowel-z2m" },
       { key: "base_topic", label: "Zigbee2MQTT Base Topic(s)", type: "text", required: false, defaultValue: "zigbee2mqtt", placeholder: "zigbee2mqtt, zigbee2mqtt_maison2" },
+      { key: "battery_refresh_hours", label: "Battery refresh interval (hours, 0 = off)", type: "number", required: false, defaultValue: "24" },
     ];
   }
 
@@ -113,6 +115,7 @@ class Zigbee2MqttPlugin implements IntegrationPlugin {
     const baseClientId = this.getSetting("mqtt_client_id") ?? "sowel-z2m";
     const mqttClientId = `${baseClientId}-${Math.random().toString(36).slice(2, 8)}`;
     this.topics = parseBaseTopics(this.getSetting("base_topic"));
+    const batteryRefreshHours = parseRefreshHours(this.getSetting("battery_refresh_hours"));
 
     try {
       this.reclaimLegacyDevices();
@@ -154,6 +157,7 @@ class Zigbee2MqttPlugin implements IntegrationPlugin {
           deviceManager: this.deviceManager,
           registry,
           logger: this.logger,
+          batteryRefreshHours,
         }).start();
       }
 
