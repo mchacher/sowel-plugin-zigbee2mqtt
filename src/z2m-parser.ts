@@ -7,6 +7,7 @@ import type { MqttConnector } from "./mqtt-connector.js";
 import type { DiscoveryRegistry } from "./discovery-registry.js";
 import { Pj1203aHandler, isPj1203a } from "./pj1203a.js";
 import { EnergyCounterNormaliser, ENERGY_KEY, ENERGY_TOTAL_KEY } from "./energy-counter.js";
+import { BatteryRefresher, BATTERY_READ_PAYLOAD, DEFAULT_REFRESH_HOURS, type PowerCfgDevice } from "./battery-refresh.js";
 
 // ============================================================
 // Z2M types
@@ -36,6 +37,8 @@ interface Z2MDevice {
   model_id?: string;
   /** "Battery", "Mains (single phase)", "DC Source", "Unknown", … */
   power_source?: string;
+  /** Bindings and reporting Z2M configured, read by the battery refresh. */
+  endpoints?: PowerCfgDevice["endpoints"];
   supported: boolean;
   disabled: boolean;
 }
@@ -275,6 +278,8 @@ export interface ParserOptions {
   /** Shared across networks so stale cleanup runs on the union of their devices. */
   registry: DiscoveryRegistry;
   logger: Logger;
+  /** Hours between two battery reads of one device; 0 disables (issue #23). */
+  batteryRefreshHours?: number;
 }
 
 /** One instance per Zigbee2MQTT network; several share the MQTT connection. */
@@ -290,6 +295,8 @@ export class Zigbee2MqttParser {
   private pj1203a: Pj1203aHandler;
   /** Cumulative Zigbee `energy` counters turned into Sowel Wh deltas (issue #17). */
   private energyCounter: EnergyCounterNormaliser;
+  /** Battery read sent when a device that never reports it wakes up (issue #23). */
+  private batteryRefresh: BatteryRefresher;
   /** null until bridge/info is seen; availability messages are queued meanwhile. */
   private availabilityEnabled: boolean | null = null;
   private pendingAvailability: { deviceName: string; status: "online" | "offline" }[] = [];
@@ -315,6 +322,11 @@ export class Zigbee2MqttParser {
     this.energyCounter = new EnergyCounterNormaliser(
       options.integrationId,
       options.deviceManager,
+      this.logger,
+    );
+    this.batteryRefresh = new BatteryRefresher(
+      options.batteryRefreshHours ?? DEFAULT_REFRESH_HOURS,
+      (friendlyName) => this.mqttConnector.publish(`${this.baseTopic}/${friendlyName}/set`, BATTERY_READ_PAYLOAD),
       this.logger,
     );
   }
@@ -367,7 +379,10 @@ export class Zigbee2MqttParser {
       // on startup (and its availability topics when the feature is on), so
       // devices come back as their own messages arrive. Declaring them up
       // before hearing from them would restore the very lie this fixes.
-      if (!first) this.logger.info({}, "Zigbee2MQTT bridge back online");
+      if (!first) {
+        this.logger.info({}, "Zigbee2MQTT bridge back online");
+        this.batteryRefresh.bridgeRestarted();
+      }
       return;
     }
     this.markAllOffline();
@@ -434,6 +449,9 @@ export class Zigbee2MqttParser {
         const parsed = this.parseZ2MDevice(z2mDevice);
         if (parsed) this.deviceManager.upsertFromDiscovery(this.integrationId, "zigbee2mqtt", parsed);
       }
+      this.batteryRefresh.learn(
+        devices.filter((d) => d.type !== "Coordinator" && d.supported && !d.disabled),
+      );
       this.pj1203a.retainOnly(pj1203aNames);
       this.energyCounter.retainOnly(currentNames);
       this.knownSourceIds = currentNames;
@@ -472,7 +490,12 @@ export class Zigbee2MqttParser {
         sourceId,
         this.energyCounter.normalise(sourceId, data as Record<string, unknown>),
       );
-    } catch { /* non-JSON ignored */ }
+    } catch { /* non-JSON ignored */ return; }
+    try {
+      this.batteryRefresh.onWake(rest);
+    } catch (err) {
+      this.logger.error({ err, device: rest } as Record<string, unknown>, "Battery refresh failed");
+    }
   }
 
   private handleDeviceAvailability(topic: string, payload: Buffer): void {

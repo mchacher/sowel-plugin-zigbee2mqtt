@@ -15,6 +15,7 @@ It subscribes to `<base_topic>/bridge/devices` for discovery, `<base_topic>/<dev
 | `mqtt_password`  | no       | —            |                                             |
 | `mqtt_client_id` | no       | `sowel-z2m`  | A random suffix is added                    |
 | `base_topic`     | no       | `zigbee2mqtt`| Base topic, or a comma-separated list — see below |
+| `battery_refresh_hours` | no | `24`     | Battery read on wake-up, `0` = off — see below |
 
 Discovery is generic: every expose becomes a device data (readable) and/or a device order (writable),
 with its Sowel `DataCategory` inferred from the property name.
@@ -76,6 +77,40 @@ Two things feed Sowel's low-battery monitoring (core spec 143):
   boolean (Tuya ZP01 motion detectors, for instance) were invisible to any battery logic before.
 
 Older Sowel cores ignore the extra field, so the plugin stays compatible with them.
+
+### Battery refresh on wake-up (2.8.0+)
+
+Some devices never report their battery on their own: Tuya IH012-RT01 / ZMS-102 motion sensors
+send occupancy on every motion, but their battery once every few months, or never again. Zigbee2MQTT
+keeps the last value in its state cache and repeats it in every message, so Sowel shows a
+months-old level with a fresh timestamp — a swapped cell can keep reading 11 %.
+
+The plugin therefore asks for it. When a state message arrives from such a device (it is awake for
+a moment), and its last read is older than `battery_refresh_hours`, the plugin publishes on
+`<base_topic>/<device>/set`:
+
+```json
+{"read":{"cluster":"genPowerCfg","attributes":["batteryVoltage","batteryPercentageRemaining"]}}
+```
+
+and Zigbee2MQTT publishes the fresh `battery` / `voltage` within a second.
+
+- **Which devices**: battery-powered, with `genPowerCfg` bound or reported in `bridge/devices`.
+  Xiaomi devices are left out: they send their battery in a heartbeat.
+- **Pacing**: at most one read per device per interval, and at least 10 s between two reads on one
+  network, so a Z2M restart does not flood the coordinator. For 60 s after the bridge comes back
+  online, reads are held: Z2M is replaying cached states, the devices are not awake.
+- **Unanswered reads**: a read is answered within a second. If the device's first message after the
+  read comes later than 5 s, the read is taken as unanswered (the device was asleep, the message
+  that triggered it came from Z2M) and retried after one hour instead of a whole interval. This is a
+  heuristic: any message inside the window counts as the answer, so a device that publishes twice
+  in one wake can hide a missed read until the next interval.
+- **Setting**: `battery_refresh_hours`, default `24`, minimum `1` (lower values are raised to 1);
+  `0` turns it off.
+- **Limits**: the feature assumes Z2M's per-device `debounce` / `throttle` are not set on these
+  devices — they delay the message past the moment the device is awake. Device states published
+  with `retain: true` are redelivered on every broker reconnect and can trigger a read on a sleeping
+  device; it is then retried an hour later.
 
 ## Energy: counters become deltas
 

@@ -120,9 +120,11 @@ export class MqttConnector {
     }
   }
 
-  publish(topic: string, payload: string | Buffer): void {
-    if (!this.client || !this.isConnected()) { this.logger.warn({ topic } as Record<string, unknown>, "Cannot publish: not connected"); return; }
+  /** Returns false when the message was dropped because the client is not connected. */
+  publish(topic: string, payload: string | Buffer): boolean {
+    if (!this.client || !this.isConnected()) { this.logger.warn({ topic } as Record<string, unknown>, "Cannot publish: not connected"); return false; }
     this.client.publish(topic, payload, (err) => { if (err) this.logger.error({ err, topic } as Record<string, unknown>, "Publish error"); });
+    return true;
   }
 
   isConnected(): boolean { return this.client?.connected ?? false; }
