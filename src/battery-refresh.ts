@@ -58,11 +58,23 @@ export const MIN_SPACING_MS = 10_000;
  */
 export const BRIDGE_RESTART_GRACE_MS = 60_000;
 
+/**
+ * A read is answered within a second. A device that publishes nothing in this
+ * window was not awake after all (the message came from Z2M, not from it):
+ * retry after RETRY_BACKOFF_MS instead of waiting a whole interval.
+ */
+export const ANSWER_WINDOW_MS = 5_000;
+export const RETRY_BACKOFF_MS = 3_600_000;
+
+/** Below one hour the reads would cost more battery than they are worth. */
+export const MIN_REFRESH_HOURS = 1;
+
 /** Parse the `battery_refresh_hours` setting: 0 disables, garbage → default. */
 export function parseRefreshHours(raw: string | undefined): number {
   if (raw === undefined || raw.trim() === "") return DEFAULT_REFRESH_HOURS;
   const hours = Number(raw);
-  return Number.isFinite(hours) && hours >= 0 ? hours : DEFAULT_REFRESH_HOURS;
+  if (!Number.isFinite(hours) || hours < 0) return DEFAULT_REFRESH_HOURS;
+  return hours === 0 ? 0 : Math.max(hours, MIN_REFRESH_HOURS);
 }
 
 export function reportsPowerCfg(device: PowerCfgDevice): boolean {
@@ -74,7 +86,8 @@ export function reportsPowerCfg(device: PowerCfgDevice): boolean {
 
 export class BatteryRefresher {
   private readonly intervalMs: number;
-  private readonly publishRead: (friendlyName: string) => void;
+  /** Returns false when the read could not be published (MQTT down). */
+  private readonly publishRead: (friendlyName: string) => boolean;
   private readonly logger: Logger;
   private readonly now: () => number;
 
@@ -82,12 +95,14 @@ export class BatteryRefresher {
   private eligible = new Set<string>();
   /** Friendly name → time of the last read sent, kept across bridge/devices. */
   private readonly lastRead = new Map<string, number>();
+  /** Reads sent and not answered yet: friendly name → time sent. */
+  private readonly pending = new Map<string, number>();
   private lastSentAt = -Infinity;
   private quietUntil = -Infinity;
 
   constructor(
     hours: number,
-    publishRead: (friendlyName: string) => void,
+    publishRead: (friendlyName: string) => boolean,
     logger: Logger,
     now: () => number = Date.now,
   ) {
@@ -104,7 +119,10 @@ export class BatteryRefresher {
     const previous = this.eligible.size;
     this.eligible = new Set(devices.filter(reportsPowerCfg).map((d) => d.friendly_name));
     for (const name of [...this.lastRead.keys()]) {
-      if (!this.eligible.has(name)) this.lastRead.delete(name);
+      if (!this.eligible.has(name)) {
+        this.lastRead.delete(name);
+        this.pending.delete(name);
+      }
     }
     // bridge/devices is republished on every rename or join: log changes only.
     if (this.enabled && this.eligible.size !== previous) {
@@ -121,16 +139,32 @@ export class BatteryRefresher {
   onWake(friendlyName: string): void {
     if (!this.enabled || !this.eligible.has(friendlyName)) return;
     const now = this.now();
+    this.settlePending(friendlyName, now);
     if (now < this.quietUntil) return;
     if (now - this.lastSentAt < MIN_SPACING_MS) return;
     const last = this.lastRead.get(friendlyName);
     if (last !== undefined && now - last < this.intervalMs) return;
 
+    if (!this.publishRead(friendlyName)) return;
     // Stamped before the answer arrives: the answer is itself a state message,
     // and must not trigger another read.
     this.lastRead.set(friendlyName, now);
+    this.pending.set(friendlyName, now);
     this.lastSentAt = now;
-    this.publishRead(friendlyName);
     this.logger.debug({ device: friendlyName }, "Battery read sent");
+  }
+
+  /**
+   * The first message after a read tells whether it was answered: inside the
+   * window it is the answer; later, the device was asleep when the read went
+   * out, so the next attempt comes after the backoff, not a whole interval.
+   */
+  private settlePending(friendlyName: string, now: number): void {
+    const sentAt = this.pending.get(friendlyName);
+    if (sentAt === undefined) return;
+    this.pending.delete(friendlyName);
+    if (now - sentAt <= ANSWER_WINDOW_MS) return;
+    this.lastRead.set(friendlyName, sentAt - this.intervalMs + Math.min(RETRY_BACKOFF_MS, this.intervalMs));
+    this.logger.debug({ device: friendlyName }, "Battery read unanswered, retrying after backoff");
   }
 }

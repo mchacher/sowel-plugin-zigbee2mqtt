@@ -490,8 +490,12 @@ export class Zigbee2MqttParser {
         sourceId,
         this.energyCounter.normalise(sourceId, data as Record<string, unknown>),
       );
+    } catch { /* non-JSON ignored */ return; }
+    try {
       this.batteryRefresh.onWake(rest);
-    } catch { /* non-JSON ignored */ }
+    } catch (err) {
+      this.logger.error({ err, device: rest } as Record<string, unknown>, "Battery refresh failed");
+    }
   }
 
   private handleDeviceAvailability(topic: string, payload: Buffer): void {

@@ -100,7 +100,10 @@ and Zigbee2MQTT publishes the fresh `battery` / `voltage` within a second.
 - **Pacing**: at most one read per device per interval, and at least 10 s between two reads on one
   network, so a Z2M restart does not flood the coordinator. For 60 s after the bridge comes back
   online, reads are held: Z2M is replaying cached states, the devices are not awake.
-- **Setting**: `battery_refresh_hours`, default `24`; `0` turns it off.
+- **Unanswered reads**: a read is answered within a second. If the device publishes nothing in the
+  next 5 s, it was not awake after all (the message came from Z2M), and the read is retried after
+  one hour instead of a whole interval.
+- **Setting**: `battery_refresh_hours`, default `24`, minimum `1`; `0` turns it off.
 
 ## Energy: counters become deltas
 

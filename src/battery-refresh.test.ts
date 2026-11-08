@@ -2,8 +2,10 @@ import { describe, it, expect } from "vitest";
 import {
   BatteryRefresher,
   BATTERY_READ_PAYLOAD,
+  ANSWER_WINDOW_MS,
   BRIDGE_RESTART_GRACE_MS,
   MIN_SPACING_MS,
+  RETRY_BACKOFF_MS,
   parseRefreshHours,
   reportsPowerCfg,
   type PowerCfgDevice,
@@ -27,9 +29,19 @@ const pir = (name: string): PowerCfgDevice => ({
 
 function makeRefresher(hours = 24) {
   let now = 1_000_000;
+  let connected = true;
   const reads: string[] = [];
-  const refresher = new BatteryRefresher(hours, (name) => reads.push(name), logger, () => now);
-  return { refresher, reads, advance: (ms: number) => { now += ms; } };
+  const refresher = new BatteryRefresher(
+    hours,
+    (name) => { if (connected) reads.push(name); return connected; },
+    logger,
+    () => now,
+  );
+  return {
+    refresher, reads,
+    advance: (ms: number) => { now += ms; },
+    setConnected: (c: boolean) => { connected = c; },
+  };
 }
 
 describe("reportsPowerCfg", () => {
@@ -62,9 +74,13 @@ describe("parseRefreshHours", () => {
     expect(parseRefreshHours("-3")).toBe(24);
   });
 
-  it("keeps 0 (off) and any positive value", () => {
+  it("keeps 0 (off) and any value from one hour up", () => {
     expect(parseRefreshHours("0")).toBe(0);
     expect(parseRefreshHours("6")).toBe(6);
+  });
+
+  it("raises a sub-hour interval to one hour", () => {
+    expect(parseRefreshHours("0.01")).toBe(1);
   });
 });
 
@@ -132,12 +148,40 @@ describe("BatteryRefresher", () => {
     expect(reads).toEqual([]);
   });
 
-  it("forgets a device removed from the network", () => {
+  it("reads a device again at once when it re-joins under the same name", () => {
     const { refresher, reads, advance } = makeRefresher();
     refresher.learn([pir("pir")]);
     refresher.onWake("pir");
     refresher.learn([]);
     advance(MIN_SPACING_MS);
+    refresher.onWake("pir");
+    expect(reads).toEqual(["pir"]);
+
+    refresher.learn([pir("pir")]);
+    refresher.onWake("pir");
+    expect(reads).toEqual(["pir", "pir"]);
+  });
+
+  it("retries an unanswered read after the backoff, not a whole interval", () => {
+    const { refresher, reads, advance } = makeRefresher(24);
+    refresher.learn([pir("pir")]);
+    refresher.onWake("pir");
+    // Nothing within the answer window: the device was asleep.
+    advance(ANSWER_WINDOW_MS + 60_000);
+    refresher.onWake("pir");
+    expect(reads).toEqual(["pir"]);
+
+    advance(RETRY_BACKOFF_MS);
+    refresher.onWake("pir");
+    expect(reads).toEqual(["pir", "pir"]);
+  });
+
+  it("does not use up the slot when the read could not be published", () => {
+    const { refresher, reads, setConnected } = makeRefresher();
+    refresher.learn([pir("pir")]);
+    setConnected(false);
+    refresher.onWake("pir");
+    setConnected(true);
     refresher.onWake("pir");
     expect(reads).toEqual(["pir"]);
   });
@@ -151,7 +195,7 @@ describe("parser wiring (issue #23)", () => {
       subscribe: (pattern: string, handler: (topic: string, payload: Buffer) => void) => {
         handlers.set(pattern, handler);
       },
-      publish: (topic: string, payload: string) => published.push({ topic, payload }),
+      publish: (topic: string, payload: string) => { published.push({ topic, payload }); return true; },
       isConnected: () => true,
     };
     const deviceManager = {
