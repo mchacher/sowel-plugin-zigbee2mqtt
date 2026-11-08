@@ -105,6 +105,9 @@ and Zigbee2MQTT publishes the fresh `battery` / `voltage` within a second.
   that triggered it came from Z2M) and retried after one hour instead of a whole interval. This is a
   heuristic: any message inside the window counts as the answer, so a device that publishes twice
   in one wake can hide a missed read until the next interval.
+- **Battery swap (2.8.1+)**: a device announces itself on the network when its cell is swapped
+  (`device_announce` on `bridge/event`). The plugin then forgets its last read, so its next message
+  reads the new cell at once instead of waiting out the interval.
 - **Setting**: `battery_refresh_hours`, default `24`, minimum `1` (lower values are raised to 1);
   `0` turns it off.
 - **Limits**: the feature assumes Z2M's per-device `debounce` / `throttle` are not set on these

@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import {
   BatteryRefresher,
   BATTERY_READ_PAYLOAD,
@@ -176,6 +176,19 @@ describe("BatteryRefresher", () => {
     expect(reads).toEqual(["pir", "pir"]);
   });
 
+  it("reads a device again on its next wake-up after it re-announces (battery swap)", () => {
+    const { refresher, reads, advance } = makeRefresher(24);
+    refresher.learn([pir("pir")]);
+    refresher.onWake("pir");
+    advance(10 * 60_000);
+    refresher.onWake("pir");
+    expect(reads).toEqual(["pir"]);
+
+    refresher.rejoined("pir");
+    refresher.onWake("pir");
+    expect(reads).toEqual(["pir", "pir"]);
+  });
+
   it("does not use up the slot when the read could not be published", () => {
     const { refresher, reads, setConnected } = makeRefresher();
     refresher.learn([pir("pir")]);
@@ -253,5 +266,23 @@ describe("parser wiring (issue #23)", () => {
     send("zigbee2mqtt/bridge/state", { state: "online" });
     send("zigbee2mqtt/Tuya_PIR_07", { occupancy: false });
     expect(published).toEqual([]);
+  });
+
+  afterEach(() => { vi.useRealTimers(); });
+
+  it("reads again after a device_announce on bridge/event", () => {
+    vi.useFakeTimers();
+    const { send, published } = makeParser("zigbee2mqtt", "");
+    send("zigbee2mqtt/Tuya_PIR_07", { occupancy: true });
+    vi.advanceTimersByTime(MIN_SPACING_MS);
+    send("zigbee2mqtt/Tuya_PIR_07", { occupancy: false });
+    expect(published).toHaveLength(1);
+
+    send("zigbee2mqtt/bridge/event", {
+      type: "device_announce",
+      data: { friendly_name: "Tuya_PIR_07", ieee_address: "0xa4c1" },
+    });
+    send("zigbee2mqtt/Tuya_PIR_07", { occupancy: true });
+    expect(published).toHaveLength(2);
   });
 });

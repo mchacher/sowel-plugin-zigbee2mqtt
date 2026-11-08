@@ -135,6 +135,17 @@ export class BatteryRefresher {
     this.quietUntil = this.now() + BRIDGE_RESTART_GRACE_MS;
   }
 
+  /**
+   * The device announced itself on the network (`device_announce`): it was
+   * power-cycled, most often by a battery swap. Forget its last read so its
+   * next message reads the new cell instead of waiting out the interval.
+   */
+  rejoined(friendlyName: string): void {
+    if (!this.lastRead.delete(friendlyName)) return;
+    this.pending.delete(friendlyName);
+    this.logger.debug({ device: friendlyName }, "Device re-announced, battery read due on next wake-up");
+  }
+
   /** A state message arrived from this device, so it is awake right now. */
   onWake(friendlyName: string): void {
     if (!this.enabled || !this.eligible.has(friendlyName)) return;
