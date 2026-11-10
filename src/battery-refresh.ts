@@ -66,6 +66,18 @@ export const BRIDGE_RESTART_GRACE_MS = 60_000;
 export const ANSWER_WINDOW_MS = 5_000;
 export const RETRY_BACKOFF_MS = 3_600_000;
 
+/**
+ * After a battery swap the device boots and Z2M reconfigures it: the read sent
+ * on its first message can go unanswered, and a second boot message inside the
+ * answer window passes for the answer (issue #26). So a re-announce owes several
+ * reads, one per wake-up at least SWAP_READ_GAP_MS apart: the boot burst counts
+ * as one, a later wake-up carries a read the device can answer. The gap is above
+ * Z2M's default 90 s `occupancy_timeout`, so a clear Z2M publishes on its own
+ * does not spend a read on a sleeping device.
+ */
+export const SWAP_READS = 3;
+export const SWAP_READ_GAP_MS = 120_000;
+
 /** Below one hour the reads would cost more battery than they are worth. */
 export const MIN_REFRESH_HOURS = 1;
 
@@ -99,6 +111,8 @@ export class BatteryRefresher {
   private readonly pending = new Map<string, number>();
   /** Friendly name → time a re-announce last cleared its read. */
   private readonly lastReset = new Map<string, number>();
+  /** Friendly name → reads still owed since its last honoured re-announce. */
+  private readonly swapReads = new Map<string, number>();
   private lastSentAt = -Infinity;
   private quietUntil = -Infinity;
 
@@ -120,7 +134,7 @@ export class BatteryRefresher {
   learn(devices: PowerCfgDevice[]): void {
     const previous = this.eligible.size;
     this.eligible = new Set(devices.filter(reportsPowerCfg).map((d) => d.friendly_name));
-    for (const map of [this.lastRead, this.pending, this.lastReset]) {
+    for (const map of [this.lastRead, this.pending, this.lastReset, this.swapReads]) {
       for (const name of [...map.keys()]) {
         if (!this.eligible.has(name)) map.delete(name);
       }
@@ -139,10 +153,12 @@ export class BatteryRefresher {
   /**
    * The device announced itself on the network (`device_announce`): it was
    * power-cycled, most often by a battery swap. Forget its last read so its
-   * next message reads the new cell instead of waiting out the interval.
+   * next wake-ups read the new cell instead of waiting out the interval.
    */
   rejoined(friendlyName: string): void {
-    if (!this.lastRead.has(friendlyName)) return;
+    // Not only devices read before: right after a plugin restart the first
+    // read of a swapped device is as likely to be lost as any other.
+    if (!this.enabled || !this.eligible.has(friendlyName)) return;
     // Some end devices re-announce on every parent change, near the edge of
     // range. Honouring each one would read on almost every wake-up and drain
     // the cell being watched: one reset per interval is plenty for a swap.
@@ -152,7 +168,8 @@ export class BatteryRefresher {
     this.lastReset.set(friendlyName, now);
     this.lastRead.delete(friendlyName);
     this.pending.delete(friendlyName);
-    this.logger.debug({ device: friendlyName }, "Device re-announced, battery read due on next wake-up");
+    this.swapReads.set(friendlyName, SWAP_READS);
+    this.logger.info({ device: friendlyName, reads: SWAP_READS }, "Device re-announced, battery reads due on next wake-ups");
   }
 
   /** A state message arrived from this device, so it is awake right now. */
@@ -163,7 +180,9 @@ export class BatteryRefresher {
     if (now < this.quietUntil) return;
     if (now - this.lastSentAt < MIN_SPACING_MS) return;
     const last = this.lastRead.get(friendlyName);
-    if (last !== undefined && now - last < this.intervalMs) return;
+    const owed = this.swapReads.get(friendlyName) ?? 0;
+    const gap = owed > 0 ? SWAP_READ_GAP_MS : this.intervalMs;
+    if (last !== undefined && now - last < gap) return;
 
     if (!this.publishRead(friendlyName)) return;
     // Stamped before the answer arrives: the answer is itself a state message,
@@ -171,7 +190,9 @@ export class BatteryRefresher {
     this.lastRead.set(friendlyName, now);
     this.pending.set(friendlyName, now);
     this.lastSentAt = now;
-    this.logger.debug({ device: friendlyName }, "Battery read sent");
+    if (owed > 1) this.swapReads.set(friendlyName, owed - 1);
+    else this.swapReads.delete(friendlyName);
+    this.logger.info({ device: friendlyName, ...(owed > 0 && { swapRead: SWAP_READS - owed + 1 }) }, "Battery read sent");
   }
 
   /**
@@ -186,7 +207,9 @@ export class BatteryRefresher {
     if (sentAt === undefined) return;
     this.pending.delete(friendlyName);
     if (now - sentAt <= ANSWER_WINDOW_MS) return;
+    this.logger.info({ device: friendlyName }, "Battery read unanswered");
+    // A swap still owing reads retries on its own, SWAP_READ_GAP_MS later.
+    if (this.swapReads.has(friendlyName)) return;
     this.lastRead.set(friendlyName, sentAt - this.intervalMs + Math.min(RETRY_BACKOFF_MS, this.intervalMs));
-    this.logger.debug({ device: friendlyName }, "Battery read unanswered, retrying after backoff");
   }
 }
