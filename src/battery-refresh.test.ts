@@ -6,6 +6,8 @@ import {
   BRIDGE_RESTART_GRACE_MS,
   MIN_SPACING_MS,
   RETRY_BACKOFF_MS,
+  SWAP_READS,
+  SWAP_READ_GAP_MS,
   parseRefreshHours,
   reportsPowerCfg,
   type PowerCfgDevice,
@@ -197,22 +199,132 @@ describe("BatteryRefresher", () => {
     // Three announces in a row, as seen on prod during one swap.
     refresher.rejoined("pir");
     refresher.rejoined("pir");
-    advance(MIN_SPACING_MS);
-    refresher.onWake("pir");
-    expect(reads).toEqual(["pir", "pir"]);
-    // The answer: without it the unanswered-read retry would fire after an hour.
-    advance(1_000);
-    refresher.onWake("pir");
+    // The re-announce owes SWAP_READS reads, one per wake-up, each answered.
+    for (let i = 0; i < SWAP_READS; i++) {
+      advance(SWAP_READ_GAP_MS);
+      refresher.onWake("pir");
+      advance(1_000);
+      refresher.onWake("pir");
+    }
+    expect(reads).toHaveLength(1 + SWAP_READS);
 
     advance(HOUR);
     refresher.rejoined("pir");
     refresher.onWake("pir");
-    expect(reads).toEqual(["pir", "pir"]);
+    expect(reads).toHaveLength(1 + SWAP_READS);
 
     advance(24 * HOUR);
     refresher.rejoined("pir");
     refresher.onWake("pir");
-    expect(reads).toEqual(["pir", "pir", "pir"]);
+    expect(reads).toHaveLength(2 + SWAP_READS);
+  });
+
+  it("keeps reading after a swap when the boot burst passes for the answer (issue #26)", () => {
+    const { refresher, reads, advance } = makeRefresher(24);
+    refresher.learn([pir("pir")]);
+    refresher.onWake("pir");
+    advance(HOUR);
+    refresher.rejoined("pir");
+    // Boot: the read goes out while Z2M reconfigures the device, and a second
+    // boot message inside the answer window looks like its answer.
+    refresher.onWake("pir");
+    advance(1_000);
+    refresher.onWake("pir");
+    expect(reads).toHaveLength(2);
+
+    // 21 minutes later, a motion: this read is the one the device answers.
+    advance(21 * 60_000);
+    refresher.onWake("pir");
+    expect(reads).toHaveLength(3);
+  });
+
+  it("keeps reading after a swap when the first read goes unanswered", () => {
+    const { refresher, reads, advance } = makeRefresher(24);
+    refresher.learn([pir("pir")]);
+    refresher.onWake("pir");
+    advance(HOUR);
+    refresher.rejoined("pir");
+    refresher.onWake("pir");
+    // Next message long after the window: unanswered, and the next swap read
+    // follows on the next wake-up past the gap.
+    advance(21 * 60_000);
+    refresher.onWake("pir");
+    expect(reads).toHaveLength(3);
+  });
+
+  it("hands an unanswered last swap read back to the one-hour backoff", () => {
+    const { refresher, reads, advance } = makeRefresher(24);
+    refresher.learn([pir("pir")]);
+    refresher.rejoined("pir");
+    // Every swap read goes unanswered: the next message comes past the window.
+    for (let i = 0; i < SWAP_READS; i++) {
+      refresher.onWake("pir");
+      advance(SWAP_READ_GAP_MS);
+    }
+    expect(reads).toHaveLength(SWAP_READS);
+    // This message settles the last read as unanswered.
+    refresher.onWake("pir");
+    expect(reads).toHaveLength(SWAP_READS);
+
+    // The backoff runs from the last read, sent one gap ago.
+    advance(RETRY_BACKOFF_MS - SWAP_READ_GAP_MS - 1);
+    refresher.onWake("pir");
+    expect(reads).toHaveLength(SWAP_READS);
+    advance(1);
+    refresher.onWake("pir");
+    expect(reads).toHaveLength(SWAP_READS + 1);
+  });
+
+  it("stops the extra reads once the swap's reads are spent", () => {
+    const { refresher, reads, advance } = makeRefresher(24);
+    refresher.learn([pir("pir")]);
+    refresher.rejoined("pir");
+    for (let i = 0; i < SWAP_READS + 2; i++) {
+      refresher.onWake("pir");
+      advance(1_000);
+      refresher.onWake("pir");
+      advance(SWAP_READ_GAP_MS);
+    }
+    expect(reads).toHaveLength(SWAP_READS);
+  });
+
+  it("does not read again inside the gap between two swap reads", () => {
+    const { refresher, reads, advance } = makeRefresher(24);
+    refresher.learn([pir("pir")]);
+    refresher.rejoined("pir");
+    refresher.onWake("pir");
+    advance(SWAP_READ_GAP_MS - 1);
+    refresher.onWake("pir");
+    expect(reads).toHaveLength(1);
+    advance(1);
+    refresher.onWake("pir");
+    expect(reads).toHaveLength(2);
+  });
+
+  it("honours a re-announce for a device not read yet", () => {
+    const { refresher, reads, advance } = makeRefresher(24);
+    refresher.learn([pir("pir")]);
+    refresher.rejoined("pir");
+    refresher.onWake("pir");
+    advance(1_000);
+    refresher.onWake("pir");
+    advance(SWAP_READ_GAP_MS);
+    refresher.onWake("pir");
+    expect(reads).toEqual(["pir", "pir"]);
+  });
+
+  it("ignores a re-announce from an ineligible device, or when disabled", () => {
+    const info = vi.fn();
+    const spy = { child: () => spy, info, debug: () => {} };
+    const learnt = [pir("pir"), { friendly_name: "aqara", power_source: "Battery" }];
+    const enabled = new BatteryRefresher(24, () => true, spy, () => 0);
+    enabled.learn(learnt);
+    info.mockClear();
+    enabled.rejoined("aqara");
+    const disabled = new BatteryRefresher(0, () => true, spy, () => 0);
+    disabled.learn(learnt);
+    disabled.rejoined("pir");
+    expect(info).not.toHaveBeenCalled();
   });
 
   it("does not use up the slot when the read could not be published", () => {

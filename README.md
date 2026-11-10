@@ -97,7 +97,7 @@ and Zigbee2MQTT publishes the fresh `battery` / `voltage` within a second.
 
 - **Which devices**: battery-powered, with `genPowerCfg` bound or reported in `bridge/devices`.
   Xiaomi devices are left out: they send their battery in a heartbeat.
-- **Pacing**: at most one read per device per interval, and at least 10 s between two reads on one
+- **Pacing**: at most one read per device per interval (plus the reads after a swap, below), and at least 10 s between two reads on one
   network, so a Z2M restart does not flood the coordinator. For 60 s after the bridge comes back
   online, reads are held: Z2M is replaying cached states, the devices are not awake.
 - **Unanswered reads**: a read is answered within a second. If the device's first message after the
@@ -107,9 +107,17 @@ and Zigbee2MQTT publishes the fresh `battery` / `voltage` within a second.
   in one wake can hide a missed read until the next interval.
 - **Battery swap (2.8.1+)**: a device announces itself on the network when its cell is swapped
   (`device_announce` on `bridge/event`). The plugin then forgets its last read, so the new cell is
-  read on its next wake-up (subject to the 10 s spacing and the restart hold above) instead of
+  read on its next wake-ups (subject to the 10 s spacing and the restart hold above) instead of
   after the interval. One announce per device per interval is honoured: some end devices
   re-announce on every parent change, and reading them on each wake-up would drain the cell.
+- **Reads after a swap (2.8.2+)**: the read sent on the first message after a swap can go
+  unanswered, because the device has just booted and Z2M is reconfiguring it, and a second boot
+  message can pass for its answer. So an honoured announce triggers **3** reads, on the next
+  wake-ups at least 120 s apart, without the one-hour backoff in between. The boot burst counts as
+  one wake-up, so a later wake-up carries a read the device can answer. If the last of the three
+  goes unanswered, the one-hour backoff applies again.
+- **Logs (2.8.2+)**: each honoured announce, read sent and read taken as unanswered is logged at
+  `info`, so a swap can be checked after the fact.
 - **Setting**: `battery_refresh_hours`, default `24`, minimum `1` (lower values are raised to 1);
   `0` turns it off.
 - **Limits**: the feature assumes Z2M's per-device `debounce` / `throttle` are not set on these
