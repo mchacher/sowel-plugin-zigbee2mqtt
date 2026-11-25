@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { pilotModeToSowel, pilotPayloadToSowel, pilotPayloadToZ2m } from "./pilot-wire.js";
+import { isPilotWireExpose, pilotModeToSowel, pilotPayloadToSowel, pilotPayloadToZ2m } from "./pilot-wire.js";
 import { Zigbee2MqttParser } from "./z2m-parser.js";
 import { createPlugin } from "./index.js";
 
@@ -31,6 +31,24 @@ describe("pilot-wire values", () => {
       expect(pilotPayloadToSowel(p)).toEqual(p);
       expect(pilotPayloadToZ2m(p)).toEqual(p);
     }
+  });
+});
+
+describe("isPilotWireExpose", () => {
+  const expose = (values?: string[], type = "enum", property = "pilot_wire_mode") =>
+    isPilotWireExpose({ type, property, values });
+
+  it("accepts the preset and a subset of it", () => {
+    expect(expose(PAIRS.map(([z2m]) => z2m))).toBe(true);
+    expect(expose(["comfort", "eco", "frost_protection", "off"])).toBe(true);
+  });
+
+  it("refuses another vocabulary (Thaleos TWC-R01), no values, another type or key", () => {
+    expect(expose(["comfort", "eco", "antifrost", "off", "comfort_1", "comfort_2"])).toBe(false);
+    expect(expose()).toBe(false);
+    expect(expose([])).toBe(false);
+    expect(expose(["eco"], "text")).toBe(false);
+    expect(expose(["eco"], "enum", "mode")).toBe(false);
   });
 });
 
