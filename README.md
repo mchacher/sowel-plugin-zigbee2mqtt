@@ -10,7 +10,7 @@ It subscribes to `<base_topic>/bridge/devices` for discovery, `<base_topic>/<dev
 
 | Key              | Required | Default      | Description                                 |
 | ---------------- | -------- | ------------ | ------------------------------------------- |
-| `mqtt_url`       | yes      | —            | `mqtt://host:1883`                          |
+| `mqtt_url`       | yes      | `mqtt://host.docker.internal:1883` | `mqtt://host:1883`                          |
 | `mqtt_username`  | no       | —            |                                             |
 | `mqtt_password`  | no       | —            |                                             |
 | `mqtt_client_id` | no       | `sowel-z2m`  | A random suffix is added                    |

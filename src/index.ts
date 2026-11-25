@@ -7,6 +7,7 @@
  */
 
 import { MqttConnector } from "./mqtt-connector.js";
+import { DEFAULT_MQTT_URL } from "./mqtt-status-detail.js";
 import { Zigbee2MqttParser } from "./z2m-parser.js";
 import { DiscoveryRegistry } from "./discovery-registry.js";
 import { parseBaseTopics, resolveDevice, type TopicConfig } from "./base-topics.js";
@@ -50,7 +51,7 @@ interface IntegrationPlugin {
   getStatus(): IntegrationStatus; isConfigured(): boolean; getSettingsSchema(): IntegrationSettingDef[];
   start(options?: { pollOffset?: number }): Promise<void>; stop(): Promise<void>;
   executeOrder(device: Device, orderKeyOrDispatchConfig: string | Record<string, unknown>, value: unknown): Promise<void>;
-  refresh?(): Promise<void>; getPollingInfo?(): { lastPollAt: string; intervalMs: number } | null;
+  refresh?(): Promise<void>; getStatusDetail?(): string | null; getPollingInfo?(): { lastPollAt: string; intervalMs: number } | null;
 }
 
 // ============================================================
@@ -91,11 +92,18 @@ class Zigbee2MqttPlugin implements IntegrationPlugin {
     return this.status;
   }
 
+  /** Spec 216 (sowel): why the broker connection is down, shown under the status. */
+  getStatusDetail(): string | null {
+    const status = this.getStatus();
+    if (status === "connected" || status === "not_configured") return null;
+    return this.mqttConnector?.getStatusDetail() ?? null;
+  }
+
   isConfigured(): boolean { return this.getSetting("mqtt_url") !== undefined; }
 
   getSettingsSchema(): IntegrationSettingDef[] {
     return [
-      { key: "mqtt_url", label: "MQTT Broker URL", type: "text", required: true, placeholder: "mqtt://localhost:1883" },
+      { key: "mqtt_url", label: "MQTT Broker URL", type: "text", required: true, placeholder: DEFAULT_MQTT_URL, defaultValue: DEFAULT_MQTT_URL },
       { key: "mqtt_username", label: "MQTT Username", type: "text", required: false },
       { key: "mqtt_password", label: "MQTT Password", type: "password", required: false },
       { key: "mqtt_client_id", label: "MQTT Client ID", type: "text", required: false, defaultValue: "sowel-z2m" },
