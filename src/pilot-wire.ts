@@ -1,7 +1,7 @@
 /**
  * Pilot-wire modules (NodOn SIN-4-FP-2x / FPS-4-1-00, ADEO, Legrand cable
  * outlet): Zigbee2MQTT exposes the order on the wire as the enum
- * `pilot_wire_mode`. Sowel has its own vocabulary for it (Sowel spec 216), so
+ * `pilot_wire_mode`. Sowel has its own vocabulary for it (Sowel spec 217), so
  * the values are translated here, both ways.
  *
  * A value with no translation passes through unchanged: Sowel shows an unknown
