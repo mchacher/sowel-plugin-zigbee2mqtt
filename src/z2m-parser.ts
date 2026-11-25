@@ -5,6 +5,7 @@
 
 import type { MqttConnector } from "./mqtt-connector.js";
 import type { DiscoveryRegistry } from "./discovery-registry.js";
+import { PILOT_WIRE_KEY, pilotModeToSowel, pilotPayloadToSowel } from "./pilot-wire.js";
 import { Pj1203aHandler, isPj1203a } from "./pj1203a.js";
 import { EnergyCounterNormaliser, ENERGY_KEY, ENERGY_TOTAL_KEY } from "./energy-counter.js";
 import { BatteryRefresher, BATTERY_READ_PAYLOAD, DEFAULT_REFRESH_HOURS, type PowerCfgDevice } from "./battery-refresh.js";
@@ -129,6 +130,7 @@ const PROPERTY_TO_CATEGORY: Record<string, DataCategory> = {
   // The core's leak/smoke alarms and zone folds key on these categories;
   // under "generic" a leak sensor could never raise its alarm (sowel#931).
   water_leak: "water_leak", smoke: "smoke",
+  [PILOT_WIRE_KEY]: "pilot_wire_mode",
 };
 
 const PROPERTY_TO_ORDER_CATEGORY: Record<string, string> = {
@@ -138,6 +140,7 @@ const PROPERTY_TO_ORDER_CATEGORY: Record<string, string> = {
   color_xy: "set_color",
   color_hs: "set_color",
   position: "set_shutter_position",
+  [PILOT_WIRE_KEY]: "set_pilot_wire_mode",
 };
 
 const LIGHT_INDICATOR_PROPERTIES = new Set(["brightness", "color_temp", "color", "color_xy", "color_hs"]);
@@ -492,7 +495,7 @@ export class Zigbee2MqttParser {
       this.deviceManager.updateDeviceData(
         this.integrationId,
         sourceId,
-        this.energyCounter.normalise(sourceId, data as Record<string, unknown>),
+        pilotPayloadToSowel(this.energyCounter.normalise(sourceId, data as Record<string, unknown>)),
       );
     } catch { /* non-JSON ignored */ return; }
     try {
@@ -597,11 +600,13 @@ export class Zigbee2MqttParser {
 
       const access = expose.access ?? Z2M_ACCESS_STATE;
       const dataType = Z2M_TYPE_TO_DATA_TYPE[expose.type] ?? "text";
+      const enumValues =
+        expose.property === PILOT_WIRE_KEY ? expose.values?.map(pilotModeToSowel) : expose.values;
 
       if (access & Z2M_ACCESS_STATE) {
         const category = inferCategory(expose.property, allProperties, parentExposeType, expose.type);
         data.push({
-          key: expose.property, type: dataType, category, unit: expose.unit, enumValues: expose.values,
+          key: expose.property, type: dataType, category, unit: expose.unit, enumValues,
           // Same wire literals as the order below, on the reading side. Core
           // coerces a boolean value onto them at ingestion (Sowel >= 1.56),
           // so a binary expose whose vocabulary is not ON/OFF — child_lock's
@@ -615,7 +620,7 @@ export class Zigbee2MqttParser {
         const orderCat = inferOrderCategory(expose.property, allProperties, parentExposeType, expose.type);
         orders.push({
           key: expose.property, type: dataType, category: orderCat,
-          min: expose.value_min, max: expose.value_max, enumValues: expose.values, unit: expose.unit,
+          min: expose.value_min, max: expose.value_max, enumValues, unit: expose.unit,
           // Wire representations of a binary expose (usually "ON"/"OFF", but
           // some devices use literal booleans or "LOCK"/"UNLOCK"). Core maps
           // boolean order values onto them at dispatch (Sowel >= 1.34), so
