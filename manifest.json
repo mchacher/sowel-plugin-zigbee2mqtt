@@ -2,7 +2,7 @@
   "id": "zigbee2mqtt",
   "type": "integration",
   "name": "Zigbee2MQTT",
-  "version": "2.8.2",
+  "version": "2.9.0",
   "description": "Zigbee devices via Zigbee2MQTT MQTT bridge (multi-coordinator)",
   "icon": "Radio",
   "repo": "mchacher/sowel-plugin-zigbee2mqtt",
@@ -14,7 +14,8 @@
       "label": "MQTT Broker URL",
       "type": "text",
       "required": true,
-      "placeholder": "mqtt://localhost:1883"
+      "placeholder": "mqtt://host.docker.internal:1883",
+      "defaultValue": "mqtt://host.docker.internal:1883"
     },
     {
       "key": "mqtt_username",
