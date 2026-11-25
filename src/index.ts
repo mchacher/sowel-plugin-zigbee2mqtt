@@ -11,6 +11,7 @@ import { DEFAULT_MQTT_URL } from "./mqtt-status-detail.js";
 import { Zigbee2MqttParser } from "./z2m-parser.js";
 import { DiscoveryRegistry } from "./discovery-registry.js";
 import { parseBaseTopics, resolveDevice, type TopicConfig } from "./base-topics.js";
+import { pilotPayloadToZ2m } from "./pilot-wire.js";
 import { parseRefreshHours } from "./battery-refresh.js";
 
 // ============================================================
@@ -218,7 +219,7 @@ class Zigbee2MqttPlugin implements IntegrationPlugin {
       ? (value as Record<string, unknown>)
       : { [orderKey]: value };
 
-    this.mqttConnector.publish(topic, JSON.stringify(payload));
+    this.mqttConnector.publish(topic, JSON.stringify(pilotPayloadToZ2m(payload)));
   }
 
   /**

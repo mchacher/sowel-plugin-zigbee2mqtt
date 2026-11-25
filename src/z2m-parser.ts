@@ -5,6 +5,7 @@
 
 import type { MqttConnector } from "./mqtt-connector.js";
 import type { DiscoveryRegistry } from "./discovery-registry.js";
+import { isPilotWireExpose, pilotModeToSowel, pilotPayloadToSowel } from "./pilot-wire.js";
 import { Pj1203aHandler, isPj1203a } from "./pj1203a.js";
 import { EnergyCounterNormaliser, ENERGY_KEY, ENERGY_TOTAL_KEY } from "./energy-counter.js";
 import { BatteryRefresher, BATTERY_READ_PAYLOAD, DEFAULT_REFRESH_HOURS, type PowerCfgDevice } from "./battery-refresh.js";
@@ -492,7 +493,7 @@ export class Zigbee2MqttParser {
       this.deviceManager.updateDeviceData(
         this.integrationId,
         sourceId,
-        this.energyCounter.normalise(sourceId, data as Record<string, unknown>),
+        pilotPayloadToSowel(this.energyCounter.normalise(sourceId, data as Record<string, unknown>)),
       );
     } catch { /* non-JSON ignored */ return; }
     try {
@@ -597,11 +598,15 @@ export class Zigbee2MqttParser {
 
       const access = expose.access ?? Z2M_ACCESS_STATE;
       const dataType = Z2M_TYPE_TO_DATA_TYPE[expose.type] ?? "text";
+      const pilotWire = isPilotWireExpose(expose);
+      const enumValues = pilotWire ? expose.values?.map(pilotModeToSowel) : expose.values;
 
       if (access & Z2M_ACCESS_STATE) {
-        const category = inferCategory(expose.property, allProperties, parentExposeType, expose.type);
+        const category = pilotWire
+          ? "pilot_wire_mode"
+          : inferCategory(expose.property, allProperties, parentExposeType, expose.type);
         data.push({
-          key: expose.property, type: dataType, category, unit: expose.unit, enumValues: expose.values,
+          key: expose.property, type: dataType, category, unit: expose.unit, enumValues,
           // Same wire literals as the order below, on the reading side. Core
           // coerces a boolean value onto them at ingestion (Sowel >= 1.56),
           // so a binary expose whose vocabulary is not ON/OFF — child_lock's
@@ -612,10 +617,12 @@ export class Zigbee2MqttParser {
       }
 
       if (access & Z2M_ACCESS_SET) {
-        const orderCat = inferOrderCategory(expose.property, allProperties, parentExposeType, expose.type);
+        const orderCat = pilotWire
+          ? "set_pilot_wire_mode"
+          : inferOrderCategory(expose.property, allProperties, parentExposeType, expose.type);
         orders.push({
           key: expose.property, type: dataType, category: orderCat,
-          min: expose.value_min, max: expose.value_max, enumValues: expose.values, unit: expose.unit,
+          min: expose.value_min, max: expose.value_max, enumValues, unit: expose.unit,
           // Wire representations of a binary expose (usually "ON"/"OFF", but
           // some devices use literal booleans or "LOCK"/"UNLOCK"). Core maps
           // boolean order values onto them at dispatch (Sowel >= 1.34), so

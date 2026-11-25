@@ -20,6 +20,13 @@ It subscribes to `<base_topic>/bridge/devices` for discovery, `<base_topic>/<dev
 Discovery is generic: every expose becomes a device data (readable) and/or a device order (writable),
 with its Sowel `DataCategory` inferred from the property name.
 
+## Pilot-wire modules
+
+A module exposing `pilot_wire_mode` with Zigbee2MQTT's standard values (NodOn SIN-4-FP-20/21 and FPS-4-1-00,
+ADEO, VAV, Legrand cable outlet) is
+published under Sowel's `pilot_wire_mode` / `set_pilot_wire_mode` categories. Its values are translated both
+ways (`comfort_-1` is Sowel's `comfort_minus_1`, `comfort_-2` is `comfort_minus_2`); the others are the same.
+
 ## Several Zigbee coordinators
 
 Zigbee2MQTT drives **one coordinator per instance**, so a home with several coordinators runs several
